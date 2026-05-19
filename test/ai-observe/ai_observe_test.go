@@ -74,14 +74,40 @@ func TestSummarizeAIJobApplicationWarnsForCompletedOrphanPod(t *testing.T) {
 	if component.Workload.Succeeded != 1 || component.Workload.TTLSecondsAfterFinished != 300 {
 		t.Fatalf("unexpected job status: %#v", component.Workload)
 	}
-	if len(component.Pods) != 1 || component.Pods[0].Phase != "Succeeded" {
-		t.Fatalf("unexpected pod summary: %#v", component.Pods)
+	if len(component.Pods) != 0 {
+		t.Fatalf("expected orphan pod to be excluded from current Job pods, got %#v", component.Pods)
 	}
 	if len(summary.Warnings) != 1 {
 		t.Fatalf("expected orphan pod warning, got %#v", summary.Warnings)
 	}
 	if !strings.Contains(summary.Warnings[0].Message, "ownerReferences") {
 		t.Fatalf("expected ownerReferences warning, got %#v", summary.Warnings[0])
+	}
+}
+
+func TestSummarizeAIJobIgnoresHistoricalPodWithoutCurrentJobOwner(t *testing.T) {
+	summary, err := observe.SummarizeObjects([]*unstructured.Unstructured{
+		mustObject(t, aiJobApplicationYAML),
+		mustObject(t, jobYAML),
+		mustObject(t, currentJobPodYAML),
+		mustObject(t, historicalJobPodYAML),
+	})
+	if err != nil {
+		t.Fatalf("SummarizeObjects returned error: %v", err)
+	}
+
+	component := summary.Components[0]
+	if len(component.Pods) != 1 {
+		t.Fatalf("expected only the current Job-owned pod in component pods, got %#v", component.Pods)
+	}
+	if component.Pods[0].Name != "ai-job-domain-demo-batch-evaluator-current" {
+		t.Fatalf("expected current pod, got %#v", component.Pods[0])
+	}
+	if len(summary.Warnings) != 1 {
+		t.Fatalf("expected historical orphan pod warning, got %#v", summary.Warnings)
+	}
+	if !strings.Contains(summary.Warnings[0].Resource, "ai-job-domain-demo-batch-evaluator-old") {
+		t.Fatalf("expected old pod warning, got %#v", summary.Warnings[0])
 	}
 }
 
@@ -255,6 +281,7 @@ kind: Job
 metadata:
   name: ai-job-domain-demo-batch-evaluator
   namespace: sock-shop
+  uid: job-uid-current
   labels:
     app.oam.dev/name: ai-job-domain-demo
     app.oam.dev/component: batch-evaluator
@@ -270,6 +297,49 @@ spec:
         ai.oam.dev/dataset-uri: oss://datasets/eval-set/v1
 status:
   succeeded: 1
+`
+
+const currentJobPodYAML = `
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ai-job-domain-demo-batch-evaluator-current
+  namespace: sock-shop
+  labels:
+    app.oam.dev/name: ai-job-domain-demo
+    app.oam.dev/component: batch-evaluator
+    ai.oam.dev/job-kind: evaluation
+  ownerReferences:
+  - apiVersion: batch/v1
+    kind: Job
+    name: ai-job-domain-demo-batch-evaluator
+    uid: job-uid-current
+    controller: true
+status:
+  phase: Succeeded
+  containerStatuses:
+  - name: main
+    ready: false
+`
+
+const historicalJobPodYAML = `
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ai-job-domain-demo-batch-evaluator-old
+  namespace: sock-shop
+  labels:
+    app.oam.dev/name: ai-job-domain-demo
+    app.oam.dev/component: batch-evaluator
+    ai.oam.dev/job-kind: evaluation
+status:
+  phase: Pending
+  containerStatuses:
+  - name: main
+    ready: false
+    state:
+      waiting:
+        reason: ImagePullBackOff
 `
 
 const completedOrphanJobPodYAML = `

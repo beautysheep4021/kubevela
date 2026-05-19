@@ -100,9 +100,10 @@ func SummarizeObjects(objects []*unstructured.Unstructured) (*Summary, error) {
 		if component.Type == "" {
 			component.Type = componentTypeFromWorkloadKind(component.WorkloadKind)
 		}
-		component.Workload = summarizeWorkload(objects, summary.Name, component.Name, component.WorkloadKind)
+		workload := findWorkload(objects, summary.Name, component.Name, component.WorkloadKind)
+		component.Workload = summarizeWorkload(workload)
 		component.Service = summarizeService(objects, summary.Name, component.Name)
-		component.Pods = summarizePods(objects, summary.Name, component.Name, &summary.Warnings)
+		component.Pods = summarizePods(objects, summary.Name, component.Name, workload, &summary.Warnings)
 		summary.Components = append(summary.Components, component)
 		summary.Healthy = summary.Healthy || component.Healthy
 		if summary.Message == "" && component.Message != "" {
@@ -157,25 +158,54 @@ func componentTypeFromWorkloadKind(kind string) string {
 	}
 }
 
-func summarizeWorkload(objects []*unstructured.Unstructured, appName, componentName, workloadKind string) WorkloadSummary {
+func findWorkload(objects []*unstructured.Unstructured, appName, componentName, workloadKind string) *unstructured.Unstructured {
 	for _, obj := range objects {
 		if obj.GetKind() != workloadKind || !belongsToComponent(obj, appName, componentName) {
 			continue
 		}
-		summary := WorkloadSummary{Name: obj.GetName(), Kind: obj.GetKind()}
-		switch obj.GetKind() {
-		case "Deployment":
-			summary.DesiredReplicas = nestedInt64(obj.Object, "spec", "replicas")
-			summary.ReadyReplicas = nestedInt64(obj.Object, "status", "readyReplicas")
-		case "Job":
-			summary.Active = nestedInt64(obj.Object, "status", "active")
-			summary.Succeeded = nestedInt64(obj.Object, "status", "succeeded")
-			summary.Failed = nestedInt64(obj.Object, "status", "failed")
-			summary.TTLSecondsAfterFinished = nestedInt64(obj.Object, "spec", "ttlSecondsAfterFinished")
-		}
-		return summary
+		return obj
 	}
-	return WorkloadSummary{}
+	return nil
+}
+
+func summarizeWorkload(obj *unstructured.Unstructured) WorkloadSummary {
+	if obj == nil {
+		return WorkloadSummary{}
+	}
+	summary := WorkloadSummary{Name: obj.GetName(), Kind: obj.GetKind()}
+	switch obj.GetKind() {
+	case "Deployment":
+		summary.DesiredReplicas = nestedInt64(obj.Object, "spec", "replicas")
+		summary.ReadyReplicas = nestedInt64(obj.Object, "status", "readyReplicas")
+	case "Job":
+		summary.Active = nestedInt64(obj.Object, "status", "active")
+		summary.Succeeded = nestedInt64(obj.Object, "status", "succeeded")
+		summary.Failed = nestedInt64(obj.Object, "status", "failed")
+		summary.TTLSecondsAfterFinished = nestedInt64(obj.Object, "spec", "ttlSecondsAfterFinished")
+	}
+	return summary
+}
+
+func shouldIncludePod(obj *unstructured.Unstructured, workload *unstructured.Unstructured) (bool, string) {
+	if workload == nil || workload.GetKind() != "Job" {
+		return true, ""
+	}
+	for _, owner := range obj.GetOwnerReferences() {
+		if owner.Kind == "Job" && owner.UID == workload.GetUID() {
+			return true, ""
+		}
+	}
+	if len(obj.GetOwnerReferences()) == 0 {
+		return false, "Job pod has empty ownerReferences and is not counted as part of the current Job"
+	}
+	return false, "Job pod ownerReferences do not point to the current Job"
+}
+
+func orphanWarningMessage(phase string) string {
+	if phase == "Succeeded" || phase == "Failed" {
+		return "completed or failed Job pod has empty ownerReferences and may remain after Job cleanup"
+	}
+	return "Job pod has empty ownerReferences and may be historical residue from an earlier Job run"
 }
 
 func summarizeService(objects []*unstructured.Unstructured, appName, componentName string) ServiceSummary {
@@ -203,7 +233,7 @@ func summarizeService(objects []*unstructured.Unstructured, appName, componentNa
 	return ServiceSummary{}
 }
 
-func summarizePods(objects []*unstructured.Unstructured, appName, componentName string, warnings *[]Warning) []PodSummary {
+func summarizePods(objects []*unstructured.Unstructured, appName, componentName string, workload *unstructured.Unstructured, warnings *[]Warning) []PodSummary {
 	var pods []PodSummary
 	for _, obj := range objects {
 		if obj.GetKind() != "Pod" || !belongsToComponent(obj, appName, componentName) {
@@ -221,10 +251,18 @@ func summarizePods(objects []*unstructured.Unstructured, appName, componentName 
 				pod.ReadyContainers++
 			}
 		}
+		include, warning := shouldIncludePod(obj, workload)
+		if !include {
+			*warnings = append(*warnings, Warning{
+				Resource: "Pod/" + obj.GetName(),
+				Message:  warning,
+			})
+			continue
+		}
 		if (pod.Phase == "Succeeded" || pod.Phase == "Failed") && len(obj.GetOwnerReferences()) == 0 {
 			*warnings = append(*warnings, Warning{
 				Resource: "Pod/" + obj.GetName(),
-				Message:  "completed or failed Job pod has empty ownerReferences and may remain after Job cleanup",
+				Message:  orphanWarningMessage(pod.Phase),
 			})
 		}
 		pods = append(pods, pod)
