@@ -132,6 +132,36 @@ func TestSummarizeAIJobWithoutCurrentJobExcludesOrphanHistoricalPod(t *testing.T
 	}
 }
 
+func TestSummarizePodContainerWaitingAndTerminatedStates(t *testing.T) {
+	summary, err := observe.SummarizeObjects([]*unstructured.Unstructured{
+		mustObject(t, aiServiceApplicationYAML),
+		mustObject(t, deploymentYAML),
+		mustObject(t, unhealthyServicePodYAML),
+	})
+	if err != nil {
+		t.Fatalf("SummarizeObjects returned error: %v", err)
+	}
+
+	pod := summary.Components[0].Pods[0]
+	if len(pod.Containers) != 2 {
+		t.Fatalf("expected two container summaries, got %#v", pod.Containers)
+	}
+	main := pod.Containers[0]
+	if main.Name != "main" || main.State != "waiting" || main.Reason != "ImagePullBackOff" {
+		t.Fatalf("unexpected waiting container summary: %#v", main)
+	}
+	if main.Message != "Back-off pulling image" || main.RestartCount != 3 {
+		t.Fatalf("unexpected waiting detail: %#v", main)
+	}
+	sidecar := pod.Containers[1]
+	if sidecar.Name != "sidecar" || sidecar.State != "terminated" || sidecar.Reason != "Error" {
+		t.Fatalf("unexpected terminated container summary: %#v", sidecar)
+	}
+	if sidecar.ExitCode != 137 || sidecar.RestartCount != 1 {
+		t.Fatalf("unexpected terminated detail: %#v", sidecar)
+	}
+}
+
 func TestStatusCommandFromFiles(t *testing.T) {
 	root := projectRoot(t)
 	dir := t.TempDir()
@@ -273,6 +303,36 @@ status:
   containerStatuses:
   - name: main
     ready: true
+`
+
+const unhealthyServicePodYAML = `
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sentiment-domain-api-failed
+  namespace: sock-shop
+  labels:
+    app.oam.dev/name: ai-service-domain-demo
+    app.oam.dev/component: sentiment-domain-api
+    ai.oam.dev/model: sentiment
+status:
+  phase: Pending
+  containerStatuses:
+  - name: main
+    ready: false
+    restartCount: 3
+    state:
+      waiting:
+        reason: ImagePullBackOff
+        message: Back-off pulling image
+  - name: sidecar
+    ready: false
+    restartCount: 1
+    state:
+      terminated:
+        exitCode: 137
+        reason: Error
+        message: container killed
 `
 
 const aiJobApplicationYAML = `

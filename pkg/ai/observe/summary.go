@@ -55,10 +55,21 @@ type ServicePort struct {
 }
 
 type PodSummary struct {
-	Name            string `json:"name"`
-	Phase           string `json:"phase,omitempty"`
-	ReadyContainers int64  `json:"readyContainers"`
-	TotalContainers int64  `json:"totalContainers"`
+	Name            string             `json:"name"`
+	Phase           string             `json:"phase,omitempty"`
+	ReadyContainers int64              `json:"readyContainers"`
+	TotalContainers int64              `json:"totalContainers"`
+	Containers      []ContainerSummary `json:"containers,omitempty"`
+}
+
+type ContainerSummary struct {
+	Name         string `json:"name"`
+	Ready        bool   `json:"ready"`
+	RestartCount int64  `json:"restartCount"`
+	State        string `json:"state,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Message      string `json:"message,omitempty"`
+	ExitCode     int64  `json:"exitCode,omitempty"`
 }
 
 type Warning struct {
@@ -253,7 +264,12 @@ func summarizePods(objects []*unstructured.Unstructured, appName, componentName,
 		pod.TotalContainers = int64(len(statuses))
 		for _, item := range statuses {
 			statusMap, ok := item.(map[string]interface{})
-			if ok && boolFromMap(statusMap, "ready") {
+			if !ok {
+				continue
+			}
+			container := summarizeContainer(statusMap)
+			pod.Containers = append(pod.Containers, container)
+			if container.Ready {
 				pod.ReadyContainers++
 			}
 		}
@@ -277,6 +293,32 @@ func summarizePods(objects []*unstructured.Unstructured, appName, componentName,
 		return pods[i].Name < pods[j].Name
 	})
 	return pods
+}
+
+func summarizeContainer(status map[string]interface{}) ContainerSummary {
+	container := ContainerSummary{
+		Name:         stringFromMap(status, "name"),
+		Ready:        boolFromMap(status, "ready"),
+		RestartCount: intFromMap(status, "restartCount"),
+	}
+	if waiting, ok := nestedMap(status, "state", "waiting"); ok {
+		container.State = "waiting"
+		container.Reason = stringFromMap(waiting, "reason")
+		container.Message = stringFromMap(waiting, "message")
+		return container
+	}
+	if terminated, ok := nestedMap(status, "state", "terminated"); ok {
+		container.State = "terminated"
+		container.Reason = stringFromMap(terminated, "reason")
+		container.Message = stringFromMap(terminated, "message")
+		container.ExitCode = intFromMap(terminated, "exitCode")
+		return container
+	}
+	if _, ok := nestedMap(status, "state", "running"); ok {
+		container.State = "running"
+		return container
+	}
+	return container
 }
 
 func belongsToComponent(obj *unstructured.Unstructured, appName, componentName string) bool {
@@ -319,6 +361,11 @@ func nestedString(root map[string]interface{}, fields ...string) string {
 func nestedInt64(root map[string]interface{}, fields ...string) int64 {
 	value, _, _ := unstructured.NestedInt64(root, fields...)
 	return value
+}
+
+func nestedMap(root map[string]interface{}, fields ...string) (map[string]interface{}, bool) {
+	value, ok, _ := unstructured.NestedMap(root, fields...)
+	return value, ok
 }
 
 func stringFromMap(values map[string]interface{}, key string) string {
