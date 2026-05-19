@@ -12,6 +12,26 @@ The first phase is intentionally conservative:
 
 The first PoC intentionally does not introduce `AIService`, `AIJob`, or `AIWorkflow` CRDs. Product surfaces can still present those names, but the control plane stores and reconciles standard KubeVela `Application` resources.
 
+## Minimal Domain Control Layer
+
+The minimal domain-control improvement is an offline translator from AI domain YAML to native KubeVela `Application` YAML. It lets a northbound surface accept `AIService` and `AIJob` shaped documents without installing new Kubernetes CRDs or adding a new reconciliation loop.
+
+The supported domain inputs are:
+
+- `docs/examples/ai-platform/domain/ai-service.yaml`
+- `docs/examples/ai-platform/domain/ai-job.yaml`
+
+The translator maps:
+
+- `kind: AIService` to a KubeVela component with `type: ai-service`
+- `kind: AIJob` to a KubeVela component with `type: ai-job`
+- `spec.runtime` to an `ai-runtime` trait
+- `spec.placement` to native KubeVela `topology` policy and `deploy` workflow
+
+This domain layer is intentionally not a runtime API server extension. The generated output is still `apiVersion: core.oam.dev/v1beta1`, `kind: Application`, so KubeVela remains the only reconciler for these workloads.
+
+`AIWorkflow` remains out of first PoC scope and is rejected by the translator. Workflow-level orchestration should be added only after the service and job management boundaries are validated in a real cluster.
+
 ## Definitions
 
 - `ai-service` describes long-running inference or model serving workloads.
@@ -56,6 +76,7 @@ These checks do not require a Kubernetes cluster. They validate the definition f
 
 ```bash
 env GOCACHE=/tmp/kubevela-go-build-cache go test ./test/ai-definitions -count=1 -v
+env GOCACHE=/tmp/kubevela-go-build-cache go test ./test/ai-domain -count=1 -v
 ```
 
 The test suite verifies that:
@@ -66,6 +87,7 @@ The test suite verifies that:
 - The examples remain standard `core.oam.dev/v1beta1` `Application` resources.
 - The examples use native `topology`, `override`, and `deploy` controls for governance.
 - The first PoC scope does not add controller, database, or custom workflow-step surfaces.
+- The domain examples translate into native KubeVela `Application` resources without adding CRDs or controllers.
 
 You can also run a direct scope scan:
 

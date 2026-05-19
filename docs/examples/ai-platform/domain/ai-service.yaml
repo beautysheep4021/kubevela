@@ -1,0 +1,35 @@
+apiVersion: ai.oam.dev/v1alpha1
+kind: AIService
+metadata:
+  name: ai-service-domain-demo
+  namespace: sock-shop
+spec:
+  componentName: sentiment-api
+  properties:
+    image: hashicorp/http-echo:0.2.3
+    replicas: 1
+    port: 5678
+    cmd:
+      - /http-echo
+    args:
+      - -text=ai-service-ok
+    model:
+      name: sentiment
+      version: v1
+      uri: oss://models/sentiment/v1
+    endpoint:
+      port: 80
+      targetPort: 5678
+      type: ClusterIP
+  runtime:
+    runtime: http
+    framework: demo
+    tenant: demo-tenant
+    project: sentiment
+    environment: poc
+    modelURI: oss://models/sentiment/v1
+    owner: ai-platform
+  placement:
+    namespace: sock-shop
+    clusters:
+      - local
