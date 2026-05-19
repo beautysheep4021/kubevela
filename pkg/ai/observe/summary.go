@@ -103,7 +103,7 @@ func SummarizeObjects(objects []*unstructured.Unstructured) (*Summary, error) {
 		workload := findWorkload(objects, summary.Name, component.Name, component.WorkloadKind)
 		component.Workload = summarizeWorkload(workload)
 		component.Service = summarizeService(objects, summary.Name, component.Name)
-		component.Pods = summarizePods(objects, summary.Name, component.Name, workload, &summary.Warnings)
+		component.Pods = summarizePods(objects, summary.Name, component.Name, component.WorkloadKind, workload, &summary.Warnings)
 		summary.Components = append(summary.Components, component)
 		summary.Healthy = summary.Healthy || component.Healthy
 		if summary.Message == "" && component.Message != "" {
@@ -186,9 +186,15 @@ func summarizeWorkload(obj *unstructured.Unstructured) WorkloadSummary {
 	return summary
 }
 
-func shouldIncludePod(obj *unstructured.Unstructured, workload *unstructured.Unstructured) (bool, string) {
-	if workload == nil || workload.GetKind() != "Job" {
+func shouldIncludePod(obj *unstructured.Unstructured, workloadKind string, workload *unstructured.Unstructured) (bool, string) {
+	if workloadKind != "Job" {
 		return true, ""
+	}
+	if workload == nil {
+		if len(obj.GetOwnerReferences()) == 0 {
+			return false, "Job pod has empty ownerReferences and may be historical residue because the current Job object is not present"
+		}
+		return false, "Job pod is not counted because the current Job object is not present"
 	}
 	for _, owner := range obj.GetOwnerReferences() {
 		if owner.Kind == "Job" && owner.UID == workload.GetUID() {
@@ -233,7 +239,7 @@ func summarizeService(objects []*unstructured.Unstructured, appName, componentNa
 	return ServiceSummary{}
 }
 
-func summarizePods(objects []*unstructured.Unstructured, appName, componentName string, workload *unstructured.Unstructured, warnings *[]Warning) []PodSummary {
+func summarizePods(objects []*unstructured.Unstructured, appName, componentName, workloadKind string, workload *unstructured.Unstructured, warnings *[]Warning) []PodSummary {
 	var pods []PodSummary
 	for _, obj := range objects {
 		if obj.GetKind() != "Pod" || !belongsToComponent(obj, appName, componentName) {
@@ -251,7 +257,7 @@ func summarizePods(objects []*unstructured.Unstructured, appName, componentName 
 				pod.ReadyContainers++
 			}
 		}
-		include, warning := shouldIncludePod(obj, workload)
+		include, warning := shouldIncludePod(obj, workloadKind, workload)
 		if !include {
 			*warnings = append(*warnings, Warning{
 				Resource: "Pod/" + obj.GetName(),

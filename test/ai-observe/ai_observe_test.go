@@ -111,6 +111,27 @@ func TestSummarizeAIJobIgnoresHistoricalPodWithoutCurrentJobOwner(t *testing.T) 
 	}
 }
 
+func TestSummarizeAIJobWithoutCurrentJobExcludesOrphanHistoricalPod(t *testing.T) {
+	summary, err := observe.SummarizeObjects([]*unstructured.Unstructured{
+		mustObject(t, aiJobApplicationYAML),
+		mustObject(t, historicalJobPodYAML),
+	})
+	if err != nil {
+		t.Fatalf("SummarizeObjects returned error: %v", err)
+	}
+
+	component := summary.Components[0]
+	if len(component.Pods) != 0 {
+		t.Fatalf("expected orphan historical pod to be excluded when current Job is gone, got %#v", component.Pods)
+	}
+	if len(summary.Warnings) != 1 {
+		t.Fatalf("expected orphan pod warning, got %#v", summary.Warnings)
+	}
+	if !strings.Contains(summary.Warnings[0].Message, "historical") {
+		t.Fatalf("expected historical warning, got %#v", summary.Warnings[0])
+	}
+}
+
 func TestStatusCommandFromFiles(t *testing.T) {
 	root := projectRoot(t)
 	dir := t.TempDir()
