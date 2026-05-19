@@ -162,6 +162,30 @@ func TestSummarizePodContainerWaitingAndTerminatedStates(t *testing.T) {
 	}
 }
 
+func TestSummarizePodEventsForDiagnostics(t *testing.T) {
+	summary, err := observe.SummarizeObjects([]*unstructured.Unstructured{
+		mustObject(t, aiServiceApplicationYAML),
+		mustObject(t, deploymentYAML),
+		mustObject(t, unhealthyServicePodYAML),
+		mustObject(t, imagePullBackOffEventYAML),
+	})
+	if err != nil {
+		t.Fatalf("SummarizeObjects returned error: %v", err)
+	}
+
+	pod := summary.Components[0].Pods[0]
+	if len(pod.Events) != 1 {
+		t.Fatalf("expected one diagnostic event, got %#v", pod.Events)
+	}
+	event := pod.Events[0]
+	if event.Type != "Warning" || event.Reason != "Failed" {
+		t.Fatalf("unexpected event summary: %#v", event)
+	}
+	if !strings.Contains(event.Message, "Failed to pull image") {
+		t.Fatalf("expected image pull message, got %#v", event)
+	}
+}
+
 func TestStatusCommandFromFiles(t *testing.T) {
 	root := projectRoot(t)
 	dir := t.TempDir()
@@ -333,6 +357,23 @@ status:
         exitCode: 137
         reason: Error
         message: container killed
+`
+
+const imagePullBackOffEventYAML = `
+apiVersion: v1
+kind: Event
+metadata:
+  name: sentiment-domain-api-failed.1817f
+  namespace: sock-shop
+involvedObject:
+  kind: Pod
+  namespace: sock-shop
+  name: sentiment-domain-api-failed
+type: Warning
+reason: Failed
+message: Failed to pull image "ghcr.io/example/not-exist:bad"
+count: 3
+lastTimestamp: "2026-05-19T10:04:21Z"
 `
 
 const aiJobApplicationYAML = `
