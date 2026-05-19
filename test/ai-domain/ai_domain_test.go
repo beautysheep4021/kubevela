@@ -116,6 +116,63 @@ spec: {}
 	}
 }
 
+func TestValidateAIServiceRequiresImage(t *testing.T) {
+	result, err := domain.ValidateYAML([]byte(`
+apiVersion: ai.oam.dev/v1alpha1
+kind: AIService
+metadata:
+  name: no-image
+spec:
+  properties:
+    replicas: 1
+`))
+	if err != nil {
+		t.Fatalf("ValidateYAML returned error: %v", err)
+	}
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "spec.properties.image is required") {
+		t.Fatalf("expected missing image validation error, got %#v", result.Errors)
+	}
+}
+
+func TestValidateAIJobRequiresJobKind(t *testing.T) {
+	result, err := domain.ValidateYAML([]byte(`
+apiVersion: ai.oam.dev/v1alpha1
+kind: AIJob
+metadata:
+  name: no-job-kind
+spec:
+  properties:
+    image: busybox:1.36
+`))
+	if err != nil {
+		t.Fatalf("ValidateYAML returned error: %v", err)
+	}
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "spec.properties.jobKind is required") {
+		t.Fatalf("expected missing jobKind validation error, got %#v", result.Errors)
+	}
+}
+
+func TestValidateWarnsWhenComponentNameDefaultsToApplicationName(t *testing.T) {
+	result, err := domain.ValidateYAML([]byte(`
+apiVersion: ai.oam.dev/v1alpha1
+kind: AIService
+metadata:
+  name: sentiment
+spec:
+  properties:
+    image: hashicorp/http-echo:0.2.3
+`))
+	if err != nil {
+		t.Fatalf("ValidateYAML returned error: %v", err)
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("expected no validation errors, got %#v", result.Errors)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "spec.componentName is empty") {
+		t.Fatalf("expected default componentName warning, got %#v", result.Warnings)
+	}
+}
+
 func TestDomainExamplesTranslateToNativeApplications(t *testing.T) {
 	root := projectRoot(t)
 	for _, path := range []string{
@@ -148,6 +205,35 @@ func TestDomainCommandTranslatesExampleFile(t *testing.T) {
 	assertStringField(t, obj, "core.oam.dev/v1beta1", "apiVersion")
 	assertStringField(t, obj, "Application", "kind")
 	assertStringField(t, obj, "ai-service", "spec", "components", "0", "type")
+}
+
+func TestDomainCommandValidatesInvalidFile(t *testing.T) {
+	root := projectRoot(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "invalid.yaml")
+	if err := os.WriteFile(path, []byte(`
+apiVersion: ai.oam.dev/v1alpha1
+kind: AIJob
+metadata:
+  name: invalid
+spec:
+  properties:
+    image: busybox:1.36
+`), 0600); err != nil {
+		t.Fatalf("write invalid fixture: %v", err)
+	}
+
+	cmd := exec.Command("go", "run", "./references/cmd/ai-domain", "validate", "-f", path)
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "GOCACHE=/tmp/kubevela-go-build-cache")
+
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected validate command to fail for invalid file, output:\n%s", string(out))
+	}
+	if !strings.Contains(string(out), "spec.properties.jobKind is required") {
+		t.Fatalf("expected jobKind validation output, got:\n%s", string(out))
+	}
 }
 
 func TestDomainLayerScopeDoesNotAddRuntimeControlPlane(t *testing.T) {
