@@ -32,6 +32,31 @@ This domain layer is intentionally not a runtime API server extension. The gener
 
 `AIWorkflow` remains out of first PoC scope and is rejected by the translator. Workflow-level orchestration should be added only after the service and job management boundaries are validated in a real cluster.
 
+## Minimal Readonly Observe Layer
+
+The minimal observe improvement is a readonly status summary in the `ai-domain` command. It does not install Prometheus, write to a database, add a controller, add a UI, or reconcile cluster state. It only reads existing KubeVela and Kubernetes objects and aggregates them into JSON.
+
+For live cluster inspection:
+
+```bash
+ai-domain status -n sock-shop ai-service-domain-demo
+ai-domain status -n sock-shop ai-job-domain-demo
+```
+
+The command reads:
+
+- KubeVela `Application` status for phase, health, service message, and workload kind.
+- Kubernetes `Deployment`, `Job`, `Service`, and `Pod` objects selected by `app.oam.dev/name`.
+- AI metadata from labels and annotations with the `ai.oam.dev/` prefix.
+
+For local or CI checks without a cluster, use fixture files:
+
+```bash
+ai-domain status --from-files app.yaml,deploy.yaml,svc.yaml,pod.yaml
+```
+
+The summary also surfaces a warning when a completed or failed Job Pod has empty `ownerReferences`, because this was observed during server validation and can leave completed Pods behind after Application deletion.
+
 ## Definitions
 
 - `ai-service` describes long-running inference or model serving workloads.
@@ -77,6 +102,7 @@ These checks do not require a Kubernetes cluster. They validate the definition f
 ```bash
 env GOCACHE=/tmp/kubevela-go-build-cache go test ./test/ai-definitions -count=1 -v
 env GOCACHE=/tmp/kubevela-go-build-cache go test ./test/ai-domain -count=1 -v
+env GOCACHE=/tmp/kubevela-go-build-cache go test ./test/ai-observe -count=1 -v
 ```
 
 The test suite verifies that:
@@ -88,6 +114,7 @@ The test suite verifies that:
 - The examples use native `topology`, `override`, and `deploy` controls for governance.
 - The first PoC scope does not add controller, database, or custom workflow-step surfaces.
 - The domain examples translate into native KubeVela `Application` resources without adding CRDs or controllers.
+- The observe summary reads existing Application, workload, Service, and Pod objects without adding a runtime control-plane component.
 
 You can also run a direct scope scan:
 
