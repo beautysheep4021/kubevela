@@ -20,6 +20,9 @@ func main() {
 		case "translate":
 			runTranslate(os.Args[2:])
 			return
+		case "validate":
+			runValidate(os.Args[2:])
+			return
 		case "status":
 			runStatus(os.Args[2:])
 			return
@@ -53,6 +56,36 @@ func runTranslate(args []string) {
 
 	if _, err := os.Stdout.Write(out); err != nil {
 		fmt.Fprintf(os.Stderr, "write output: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runValidate(args []string) {
+	flags := flag.NewFlagSet("validate", flag.ExitOnError)
+	file := flags.String("f", "", "AI domain YAML file to validate")
+	_ = flags.Parse(args)
+
+	if *file == "" {
+		fmt.Fprintln(os.Stderr, "-f is required")
+		os.Exit(2)
+	}
+	in, err := os.ReadFile(*file)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read %s: %v\n", *file, err)
+		os.Exit(1)
+	}
+	result, err := domain.ValidateYAML(in)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "validate %s: %v\n", *file, err)
+		os.Exit(1)
+	}
+	out, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "encode validation output: %v\n", err)
+		os.Exit(1)
+	}
+	_, _ = os.Stdout.Write(append(out, '\n'))
+	if len(result.Errors) > 0 {
 		os.Exit(1)
 	}
 }

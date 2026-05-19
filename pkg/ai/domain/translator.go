@@ -12,24 +12,73 @@ const (
 	oamAPIVersion    = "core.oam.dev/v1beta1"
 )
 
+type ValidationResult struct {
+	Errors   []string `json:"errors,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
 // TranslateYAML converts one AI domain document into one native KubeVela Application.
 func TranslateYAML(in []byte) ([]byte, error) {
-	var doc domainDocument
-	if err := yamlv3.Unmarshal(in, &doc); err != nil {
-		return nil, fmt.Errorf("decode AI domain YAML: %w", err)
+	doc, err := decodeDomainDocument(in)
+	if err != nil {
+		return nil, err
 	}
-	if doc.APIVersion != domainAPIVersion {
-		return nil, fmt.Errorf("unsupported apiVersion %q", doc.APIVersion)
-	}
-	if doc.Metadata.Name == "" {
-		return nil, fmt.Errorf("metadata.name is required")
+	result := validateDocument(doc)
+	if len(result.Errors) > 0 {
+		return nil, fmt.Errorf("invalid AI domain YAML: %s", result.Errors[0])
 	}
 
 	componentType, err := componentTypeForKind(doc.Kind)
 	if err != nil {
 		return nil, err
 	}
+	return translateDocument(doc, componentType)
+}
 
+func ValidateYAML(in []byte) (ValidationResult, error) {
+	doc, err := decodeDomainDocument(in)
+	if err != nil {
+		return ValidationResult{}, err
+	}
+	return validateDocument(doc), nil
+}
+
+func decodeDomainDocument(in []byte) (domainDocument, error) {
+	var doc domainDocument
+	if err := yamlv3.Unmarshal(in, &doc); err != nil {
+		return domainDocument{}, fmt.Errorf("decode AI domain YAML: %w", err)
+	}
+	return doc, nil
+}
+
+func validateDocument(doc domainDocument) ValidationResult {
+	var result ValidationResult
+	if doc.APIVersion != domainAPIVersion {
+		result.Errors = append(result.Errors, fmt.Sprintf("unsupported apiVersion %q", doc.APIVersion))
+	}
+	if doc.Metadata.Name == "" {
+		result.Errors = append(result.Errors, "metadata.name is required")
+	}
+	componentType, err := componentTypeForKind(doc.Kind)
+	if err != nil {
+		result.Errors = append(result.Errors, err.Error())
+		return result
+	}
+	if doc.Spec.ComponentName == "" {
+		result.Warnings = append(result.Warnings, "spec.componentName is empty; metadata.name will be used as the component name")
+	}
+	if _, ok := doc.Spec.Properties["image"]; !ok {
+		result.Errors = append(result.Errors, "spec.properties.image is required")
+	}
+	if componentType == "ai-job" {
+		if _, ok := doc.Spec.Properties["jobKind"]; !ok {
+			result.Errors = append(result.Errors, "spec.properties.jobKind is required for AIJob")
+		}
+	}
+	return result
+}
+
+func translateDocument(doc domainDocument, componentType string) ([]byte, error) {
 	componentName := doc.Spec.ComponentName
 	if componentName == "" {
 		componentName = doc.Metadata.Name
