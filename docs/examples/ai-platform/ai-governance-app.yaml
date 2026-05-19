@@ -1,0 +1,86 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: ai-governance-demo
+spec:
+  components:
+    - name: sentiment-api
+      type: ai-service
+      properties:
+        image: ghcr.io/example/sentiment-server:0.1.0
+        replicas: 1
+        model:
+          name: sentiment-bert
+          version: v1
+          uri: oss://models/sentiment-bert/v1
+        endpoint:
+          port: 8080
+          servicePort: 80
+      traits:
+        - type: ai-runtime
+          properties:
+            runtime: triton
+            framework: pytorch
+            tenant: demo-tenant
+            project: sentiment
+            environment: poc
+            modelURI: oss://models/sentiment-bert/v1
+            owner: ai-platform
+        - type: gpu-resource
+          properties:
+            count: 1
+    - name: batch-evaluator
+      type: ai-job
+      properties:
+        image: ghcr.io/example/model-evaluator:0.1.0
+        jobKind: evaluation
+        parallelism: 1
+        completions: 1
+        dataset:
+          uri: oss://datasets/eval-set/v1
+        output:
+          uri: oss://outputs/eval-runs/demo
+      traits:
+        - type: ai-runtime
+          properties:
+            runtime: pytorch
+            framework: pytorch
+            tenant: demo-tenant
+            project: evaluation
+            environment: poc
+            datasetURI: oss://datasets/eval-set/v1
+            owner: ai-platform
+        - type: gpu-resource
+          properties:
+            count: 1
+  policies:
+    - name: local-topology
+      type: topology
+      properties:
+        clusters: ["local"]
+        namespace: ai-poc
+    - name: service-ha-override
+      type: override
+      properties:
+        components:
+          - name: sentiment-api
+            properties:
+              replicas: 2
+    - name: job-batch-override
+      type: override
+      properties:
+        components:
+          - name: batch-evaluator
+            properties:
+              parallelism: 2
+              completions: 2
+  workflow:
+    steps:
+      - name: deploy-ai-service
+        type: deploy
+        properties:
+          policies: ["local-topology", "service-ha-override"]
+      - name: run-ai-job
+        type: deploy
+        properties:
+          policies: ["local-topology", "job-batch-override"]

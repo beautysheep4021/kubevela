@@ -1,0 +1,82 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: ai-job-demo
+spec:
+  components:
+    - name: batch-evaluator
+      type: ai-job
+      properties:
+        image: ghcr.io/example/model-evaluator:0.1.0
+        imagePullPolicy: IfNotPresent
+        jobKind: evaluation
+        parallelism: 1
+        completions: 1
+        backoffLimit: 2
+        activeDeadlineSeconds: 1800
+        completionMode: Indexed
+        ttlSecondsAfterFinished: 300
+        suspend: false
+        dataset:
+          uri: oss://datasets/eval-set/v1
+        output:
+          uri: oss://outputs/eval-runs/demo
+        envFrom:
+          - secretRef:
+              name: evaluator-runtime-secrets
+        volumes:
+          - name: model-cache
+            emptyDir: {}
+        volumeMounts:
+          - name: model-cache
+            mountPath: /cache
+        securityContext:
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        containerSecurityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+        automountServiceAccountToken: false
+        terminationGracePeriodSeconds: 30
+        lifecycle:
+          preStop:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - echo draining
+        args:
+          - --metric
+          - accuracy
+        resources:
+          requests:
+            cpu: "2"
+            memory: 4Gi
+          limits:
+            cpu: "4"
+            memory: 8Gi
+      traits:
+        - type: ai-runtime
+          properties:
+            runtime: pytorch
+            framework: pytorch
+            tenant: demo-tenant
+            project: evaluation
+            environment: poc
+            datasetURI: oss://datasets/eval-set/v1
+            owner: ai-platform
+        - type: gpu-resource
+          properties:
+            count: 1
+  policies:
+    - name: local-topology
+      type: topology
+      properties:
+        clusters: ["local"]
+  workflow:
+    steps:
+      - name: run-ai-job
+        type: deploy
+        properties:
+          policies: ["local-topology"]

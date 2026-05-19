@@ -1,0 +1,81 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: ai-service-demo
+spec:
+  components:
+    - name: sentiment-api
+      type: ai-service
+      properties:
+        image: ghcr.io/example/sentiment-server:0.1.0
+        imagePullPolicy: IfNotPresent
+        replicas: 2
+        strategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxUnavailable: 0
+            maxSurge: 1
+        minReadySeconds: 10
+        progressDeadlineSeconds: 600
+        revisionHistoryLimit: 3
+        automountServiceAccountToken: false
+        terminationGracePeriodSeconds: 60
+        model:
+          name: sentiment-bert
+          version: v1
+          uri: oss://models/sentiment-bert/v1
+        endpoint:
+          port: 8080
+          servicePort: 80
+          labels:
+            ai.oam.dev/exposure: internal
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+        envFrom:
+          - configMapRef:
+              name: sentiment-runtime-config
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        securityContext:
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        containerSecurityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+        resources:
+          requests:
+            cpu: "1"
+            memory: 2Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+      traits:
+        - type: ai-runtime
+          properties:
+            runtime: triton
+            framework: pytorch
+            tenant: demo-tenant
+            project: sentiment
+            environment: poc
+            modelURI: oss://models/sentiment-bert/v1
+            owner: ai-platform
+        - type: gpu-resource
+          properties:
+            count: 1
+  policies:
+    - name: local-topology
+      type: topology
+      properties:
+        clusters: ["local"]
+  workflow:
+    steps:
+      - name: deploy-ai-service
+        type: deploy
+        properties:
+          policies: ["local-topology"]

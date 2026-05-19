@@ -1,0 +1,241 @@
+"ai-job": {
+	type: "component"
+	annotations: {}
+	labels: {}
+	description: "Describes AI batch, evaluation, training, and offline inference workloads as native KubeVela Application components."
+	attributes: {
+		workload: {
+			definition: {
+				apiVersion: "batch/v1"
+				kind:       "Job"
+			}
+			type: "jobs.batch"
+		}
+		status: {
+			customStatus: #"""
+				status: {
+					active:    *0 | int
+					failed:    *0 | int
+					succeeded: *0 | int
+				} & {
+					if context.output.status.active != _|_ {
+						active: context.output.status.active
+					}
+					if context.output.status.failed != _|_ {
+						failed: context.output.status.failed
+					}
+					if context.output.status.succeeded != _|_ {
+						succeeded: context.output.status.succeeded
+					}
+				}
+				message: "Active/Failed/Succeeded:\(status.active)/\(status.failed)/\(status.succeeded)"
+				"""#
+			healthPolicy: #"""
+				succeeded: *0 | int
+				if context.output.status.succeeded != _|_ {
+					succeeded: context.output.status.succeeded
+				}
+				isHealth: succeeded == context.output.spec.completions
+				"""#
+		}
+	}
+}
+template: {
+	let aiManagementLabels = {
+		"app.oam.dev/name":         context.appName
+		"app.oam.dev/component":    context.name
+		"ai.oam.dev/workload-kind": "job"
+		"ai.oam.dev/job-kind":      parameter.jobKind
+	}
+
+	output: {
+		apiVersion: "batch/v1"
+		kind:       "Job"
+		metadata: {
+			name: "\(context.appName)-\(context.name)"
+			labels: aiManagementLabels
+			annotations: {
+				"ai.oam.dev/workload-kind": "job"
+				if parameter.annotations != _|_ {
+					parameter.annotations
+				}
+			}
+		}
+		spec: {
+			parallelism:           parameter.parallelism
+			completions:           parameter.completions
+			backoffLimit:          parameter.backoffLimit
+			activeDeadlineSeconds: parameter.activeDeadlineSeconds
+			if parameter.completionMode != _|_ {
+				completionMode: parameter.completionMode
+			}
+			if parameter.ttlSecondsAfterFinished != _|_ {
+				ttlSecondsAfterFinished: parameter.ttlSecondsAfterFinished
+			}
+			if parameter.suspend != _|_ {
+				suspend: parameter.suspend
+			}
+			template: {
+				metadata: labels: {
+					if parameter.labels != _|_ {
+						parameter.labels
+					}
+					aiManagementLabels
+				}
+				spec: {
+					restartPolicy: parameter.restartPolicy
+					if parameter.serviceAccountName != _|_ {
+						serviceAccountName: parameter.serviceAccountName
+					}
+					if parameter.automountServiceAccountToken != _|_ {
+						automountServiceAccountToken: parameter.automountServiceAccountToken
+					}
+					if parameter.imagePullSecrets != _|_ {
+						imagePullSecrets: parameter.imagePullSecrets
+					}
+					if parameter.priorityClassName != _|_ {
+						priorityClassName: parameter.priorityClassName
+					}
+					if parameter.runtimeClassName != _|_ {
+						runtimeClassName: parameter.runtimeClassName
+					}
+					if parameter.schedulerName != _|_ {
+						schedulerName: parameter.schedulerName
+					}
+					if parameter.securityContext != _|_ {
+						securityContext: parameter.securityContext
+					}
+					if parameter.terminationGracePeriodSeconds != _|_ {
+						terminationGracePeriodSeconds: parameter.terminationGracePeriodSeconds
+					}
+					if parameter.volumes != _|_ {
+						volumes: parameter.volumes
+					}
+					containers: [{
+						name:  context.name
+						image: parameter.image
+						if parameter["imagePullPolicy"] != _|_ {
+							imagePullPolicy: parameter.imagePullPolicy
+						}
+						if parameter.containerSecurityContext != _|_ {
+							securityContext: parameter.containerSecurityContext
+						}
+						if parameter["cmd"] != _|_ {
+							command: parameter.cmd
+						}
+						if parameter["args"] != _|_ {
+							args: parameter.args
+						}
+						env: [
+							{
+								name:  "AI_JOB_KIND"
+								value: parameter.jobKind
+							},
+							if parameter.dataset.uri != _|_ {
+								name:  "DATASET_URI"
+								value: parameter.dataset.uri
+							},
+							if parameter.output.uri != _|_ {
+								name:  "OUTPUT_URI"
+								value: parameter.output.uri
+							},
+							if parameter["env"] != _|_ for e in parameter.env {e},
+						]
+						if parameter.envFrom != _|_ {
+							envFrom: parameter.envFrom
+						}
+						if parameter.resources != _|_ {
+							resources: parameter.resources
+						}
+						if parameter.lifecycle != _|_ {
+							lifecycle: parameter.lifecycle
+						}
+						if parameter.volumeMounts != _|_ {
+							volumeMounts: parameter.volumeMounts
+						}
+					}]
+				}
+			}
+		}
+	}
+
+	parameter: {
+		// +usage=Container image for the AI job runtime
+		image: string
+		// +usage=Container image pull policy
+		imagePullPolicy?: "Always" | "Never" | "IfNotPresent"
+		// +usage=Service account used by the AI job pods
+		serviceAccountName?: string
+		// +usage=Whether to automount the service account token into AI job pods
+		automountServiceAccountToken?: bool
+		// +usage=Image pull secrets used by the AI job pods
+		imagePullSecrets?: [...{
+			name: string
+		}]
+		// +usage=Priority class name used by the AI job pods
+		priorityClassName?: string
+		// +usage=Runtime class name used by the AI job pods
+		runtimeClassName?: string
+		// +usage=Scheduler name used by the AI job pods
+		schedulerName?: string
+		// +usage=Kubernetes pod security context used by the AI job pods
+		securityContext?: {...}
+		// +usage=Kubernetes container security context used by the AI job container
+		containerSecurityContext?: {...}
+		// +usage=Grace period in seconds before forcibly terminating AI job pods
+		terminationGracePeriodSeconds?: int & >=0
+		// +usage=AI job category
+		jobKind: *"batch" | "training" | "evaluation" | "offline-inference" | "batch"
+		// +usage=Number of pods that may run in parallel
+		parallelism: *1 | int & >=1
+		// +usage=Number of successful completions required
+		completions: *1 | int & >=1
+		// +usage=Retry count before the job is marked failed
+		backoffLimit: *3 | int & >=0
+		// +usage=Maximum job runtime in seconds
+		activeDeadlineSeconds: *3600 | int & >=1
+		// +usage=Completion tracking mode for the Kubernetes Job
+		completionMode?: "NonIndexed" | "Indexed"
+		// +usage=Seconds after completion before the finished Job can be cleaned up
+		ttlSecondsAfterFinished?: int & >=0
+		// +usage=Whether to create the Job in suspended state
+		suspend?: bool
+		// +usage=Job pod restart policy
+		restartPolicy: *"Never" | "Never" | "OnFailure"
+		// +usage=Dataset metadata passed to the job runtime
+		dataset: {
+			uri?: string
+		}
+		// +usage=Output metadata passed to the job runtime
+		output: {
+			uri?: string
+		}
+		// +usage=Commands to run in the container
+		cmd?: [...string]
+		// +usage=Arguments to run in the container
+		args?: [...string]
+		// +usage=Environment variables for the container
+		env?: [...{
+			name: string
+			value?: string
+			valueFrom?: {...}
+		}]
+		// +usage=Environment variable sources for the container
+		envFrom?: [...{...}]
+		// +usage=Labels on the workload pod template
+		labels?: [string]: string
+		// +usage=Annotations on the workload and pod template
+		annotations?: [string]: string
+		// +usage=Kubernetes resource requests and limits
+		resources?: {
+			requests?: [string]: string
+			limits?: [string]: string
+		}
+		// +usage=Kubernetes volumes attached to the AI job pod
+		volumes?: [...{...}]
+		// +usage=Kubernetes lifecycle hooks attached to the AI job container
+		lifecycle?: {...}
+		// +usage=Kubernetes volume mounts attached to the AI job container
+		volumeMounts?: [...{...}]
+	}
+}
