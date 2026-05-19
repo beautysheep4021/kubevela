@@ -18,6 +18,7 @@ var (
 	jobGVR         = schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}
 	serviceGVR     = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "services"}
 	podGVR         = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"}
+	eventGVR       = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "events"}
 )
 
 // SummarizeApplication reads a KubeVela Application and related native resources using GET/LIST only.
@@ -55,6 +56,14 @@ func SummarizeApplication(ctx context.Context, kubeconfig, namespace, name strin
 			item := list.Items[i]
 			objects = append(objects, &item)
 		}
+	}
+	eventList, err := client.Resource(eventGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list events for Application %s/%s: %w", namespace, name, err)
+	}
+	for i := range eventList.Items {
+		item := eventList.Items[i]
+		objects = append(objects, &item)
 	}
 	return SummarizeObjects(objects)
 }
