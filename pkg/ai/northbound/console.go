@@ -1,34 +1,34 @@
 package northbound
 
 const consoleHTML = `<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Northbound Console</title>
+  <title>智算纳管北向验证台</title>
   <style>
     :root {
-      --ink: #18211f;
-      --muted: #5d6b66;
-      --paper: #fffaf0;
-      --line: rgba(24, 33, 31, .14);
+      --ink: #1d2522;
+      --muted: #61706b;
+      --paper: #fff8e8;
+      --line: rgba(29, 37, 34, .14);
       --field: rgba(255, 255, 255, .72);
-      --moss: #3f5f4c;
-      --rust: #b85f37;
-      --gold: #e4b95b;
-      --blue: #315f7c;
-      --shadow: 0 22px 80px rgba(24, 33, 31, .16);
+      --moss: #375b4c;
+      --rust: #b75d35;
+      --gold: #d9a73e;
+      --blue: #2f5f74;
+      --shadow: 0 22px 80px rgba(29, 37, 34, .16);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       min-height: 100vh;
       color: var(--ink);
-      font-family: "Avenir Next", "Gill Sans", "Trebuchet MS", sans-serif;
+      font-family: "Noto Serif SC", "Songti SC", "STSong", "PingFang SC", serif;
       background:
-        radial-gradient(circle at top left, rgba(228, 185, 91, .45), transparent 32rem),
-        radial-gradient(circle at 86% 14%, rgba(49, 95, 124, .18), transparent 28rem),
-        linear-gradient(135deg, #f7efe0 0%, #efe4cf 44%, #dfe9df 100%);
+        radial-gradient(circle at top left, rgba(217, 167, 62, .42), transparent 32rem),
+        radial-gradient(circle at 86% 14%, rgba(47, 95, 116, .2), transparent 28rem),
+        linear-gradient(135deg, #f6ecd8 0%, #efe1c5 42%, #dbe8dd 100%);
     }
     body:before {
       content: "";
@@ -55,16 +55,16 @@ const consoleHTML = `<!doctype html>
     }
     h1 {
       margin: 0;
-      font-family: Georgia, "Times New Roman", serif;
+      font-family: "Noto Serif SC", "Songti SC", Georgia, serif;
       font-size: clamp(42px, 7vw, 92px);
-      line-height: .88;
-      letter-spacing: -0.06em;
+      line-height: .96;
+      letter-spacing: -0.08em;
     }
     .lede {
       max-width: 760px;
       margin: 18px 0 0;
       color: var(--muted);
-      font-size: 18px;
+      font-size: 17px;
       line-height: 1.55;
     }
     .status-strip {
@@ -86,8 +86,7 @@ const consoleHTML = `<!doctype html>
       color: var(--muted);
       font-size: 12px;
       font-weight: 800;
-      letter-spacing: .16em;
-      text-transform: uppercase;
+      letter-spacing: .12em;
     }
     .metric {
       margin-top: 8px;
@@ -153,7 +152,7 @@ const consoleHTML = `<!doctype html>
       outline: none;
       color: #17211e;
       background: var(--field);
-      font-family: "SFMono-Regular", "Cascadia Code", "Liberation Mono", monospace;
+      font-family: "SFMono-Regular", "Cascadia Code", "PingFang SC", monospace;
       font-size: 14px;
       line-height: 1.54;
     }
@@ -194,7 +193,7 @@ const consoleHTML = `<!doctype html>
       border-radius: 24px;
       color: #f8f0da;
       background: #19211f;
-      font-family: "SFMono-Regular", "Cascadia Code", "Liberation Mono", monospace;
+      font-family: "SFMono-Regular", "Cascadia Code", "PingFang SC", monospace;
       font-size: 13px;
       line-height: 1.5;
       box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
@@ -228,21 +227,21 @@ const consoleHTML = `<!doctype html>
   <main>
     <section class="hero">
       <div>
-        <div class="label">AI management northbound PoC</div>
-        <h1>AI Northbound Console</h1>
-        <p class="lede">A minimal verification surface for AIService and AIJob domain YAML. Validate the document, normalize semantic intent, and inspect governance signals before any deployment path is exposed.</p>
+        <div class="label">智算纳管 · 北向接入 PoC</div>
+        <h1>智算纳管北向验证台</h1>
+        <p class="lede">面向 AIService 与 AIJob 领域 YAML 的最小验证界面。这里先完成文档校验、语义归一化和治理意图预览，部署写入能力暂不暴露。</p>
       </div>
       <div class="status-strip">
         <div class="status-card">
-          <div class="label">API health</div>
-          <div class="metric" id="health">checking</div>
+          <div class="label">接口健康</div>
+          <div class="metric" id="health">检查中</div>
         </div>
         <div class="status-card">
-          <div class="label">Validate endpoint</div>
+          <div class="label">校验入口</div>
           <div class="metric">/api/v1/ai/validate</div>
         </div>
         <div class="status-card">
-          <div class="label">Normalize endpoint</div>
+          <div class="label">归一化入口</div>
           <div class="metric">/api/v1/ai/normalize</div>
         </div>
       </div>
@@ -251,12 +250,12 @@ const consoleHTML = `<!doctype html>
     <section class="workspace">
       <section class="panel">
         <div class="panel-head">
-          <h2 class="panel-title">Domain YAML</h2>
+          <h2 class="panel-title">领域 YAML</h2>
           <div class="actions">
-            <button class="ghost" id="load-service">AIService sample</button>
-            <button class="ghost" id="load-job">AIJob sample</button>
-            <button class="secondary" id="validate">Validate</button>
-            <button id="normalize">Normalize</button>
+            <button class="ghost" id="load-service">载入 AIService</button>
+            <button class="ghost" id="load-job">载入 AIJob</button>
+            <button class="secondary" id="validate">校验</button>
+            <button id="normalize">归一化</button>
           </div>
         </div>
         <textarea id="yaml" spellcheck="false"></textarea>
@@ -264,12 +263,12 @@ const consoleHTML = `<!doctype html>
 
       <section class="panel">
         <div class="panel-head">
-          <h2 class="panel-title">Platform Preview</h2>
-          <div class="label" id="last-action">ready</div>
+          <h2 class="panel-title">平台视图预览</h2>
+          <div class="label" id="last-action">待操作</div>
         </div>
         <div class="results">
           <div class="result-grid" id="cards"></div>
-          <div id="output" class="empty">Run validate or normalize to inspect governanceIntent and workloadIntent.</div>
+          <div id="output" class="empty">点击“校验”或“归一化”，查看治理意图 governanceIntent 与工作负载意图 workloadIntent 的解析结果。</div>
         </div>
       </section>
     </section>
@@ -353,7 +352,7 @@ const consoleHTML = `<!doctype html>
       cards.innerHTML = "";
       output.className = "empty";
       output.textContent = message;
-      lastAction.textContent = "error";
+      lastAction.textContent = "错误";
     }
     function card(label, value, mode) {
       var node = document.createElement("div");
@@ -363,15 +362,15 @@ const consoleHTML = `<!doctype html>
     }
     function renderCards(data) {
       cards.innerHTML = "";
-      cards.appendChild(card("kind", data.kind, "ok"));
-      cards.appendChild(card("workload", data.workloadType, "ok"));
-      cards.appendChild(card("tenant", data.governanceIntent && data.governanceIntent.tenant, ""));
-      cards.appendChild(card("project", data.governanceIntent && data.governanceIntent.project, ""));
-      cards.appendChild(card("runtime", data.runtime, ""));
-      cards.appendChild(card("image", data.image, ""));
+      cards.appendChild(card("对象类型", data.kind, "ok"));
+      cards.appendChild(card("负载类型", data.workloadType, "ok"));
+      cards.appendChild(card("租户", data.governanceIntent && data.governanceIntent.tenant, ""));
+      cards.appendChild(card("项目", data.governanceIntent && data.governanceIntent.project, ""));
+      cards.appendChild(card("运行时", data.runtime, ""));
+      cards.appendChild(card("镜像", data.image, ""));
     }
     function post(path) {
-      lastAction.textContent = "running";
+      lastAction.textContent = "处理中";
       return fetch(path, {
         method: "POST",
         headers: {"Content-Type": "application/yaml"},
@@ -387,27 +386,27 @@ const consoleHTML = `<!doctype html>
     }
     document.getElementById("load-service").onclick = function() {
       yaml.value = serviceSample;
-      lastAction.textContent = "service sample";
+      lastAction.textContent = "已载入服务样例";
     };
     document.getElementById("load-job").onclick = function() {
       yaml.value = jobSample;
-      lastAction.textContent = "job sample";
+      lastAction.textContent = "已载入任务样例";
     };
     document.getElementById("validate").onclick = function() {
       post("/api/v1/ai/validate").then(function(data) {
         cards.innerHTML = "";
-        cards.appendChild(card("validation", "passed", "ok"));
-        setJSON(data, "validated");
+        cards.appendChild(card("校验结果", "通过", "ok"));
+        setJSON(data, "已校验");
       }).catch(function(err) {
         cards.innerHTML = "";
-        cards.appendChild(card("validation", "failed", "warn"));
+        cards.appendChild(card("校验结果", "未通过", "warn"));
         setError(err.message);
       });
     };
     document.getElementById("normalize").onclick = function() {
       post("/api/v1/ai/normalize").then(function(data) {
         renderCards(data);
-        setJSON(data, "normalized");
+        setJSON(data, "已归一化");
       }).catch(function(err) {
         setError(err.message);
       });
@@ -415,9 +414,9 @@ const consoleHTML = `<!doctype html>
     fetch("/healthz").then(function(res) {
       return res.text();
     }).then(function(text) {
-      document.getElementById("health").textContent = text.trim() || "ok";
+      document.getElementById("health").textContent = text.trim() ? "正常" : "正常";
     }).catch(function() {
-      document.getElementById("health").textContent = "offline";
+      document.getElementById("health").textContent = "离线";
     });
   </script>
 </body>
