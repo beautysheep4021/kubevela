@@ -1,6 +1,7 @@
 package aidomain
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -98,6 +99,114 @@ spec:
 	assertStringField(t, out, "topology", "spec", "policies", "0", "type")
 	assertStringField(t, out, "ai-jobs", "spec", "policies", "0", "properties", "namespace")
 	assertStringField(t, out, "deploy", "spec", "workflow", "steps", "0", "type")
+}
+
+func TestNormalizeAIServiceExtractsGovernanceIntent(t *testing.T) {
+	normalized := normalize(t, []byte(`
+apiVersion: ai.oam.dev/v1alpha1
+kind: AIService
+metadata:
+  name: sentiment-demo
+  namespace: ai-demo
+spec:
+  componentName: sentiment-api
+  properties:
+    image: hashicorp/http-echo:0.2.3
+    replicas: 2
+    model:
+      name: sentiment
+      version: v1
+      uri: oss://models/sentiment/v1
+    endpoint:
+      port: 5678
+      servicePort: 80
+      type: ClusterIP
+  runtime:
+    runtime: http
+    framework: demo
+    tenant: demo-tenant
+    project: sentiment
+    environment: poc
+    modelURI: oss://models/sentiment/v1
+    owner: ai-platform
+  placement:
+    namespace: ai-runtime
+    clusters:
+    - local
+`))
+
+	if normalized.Kind != "AIService" || normalized.WorkloadType != "service" {
+		t.Fatalf("unexpected normalized service identity: %#v", normalized)
+	}
+	if normalized.Name != "sentiment-demo" || normalized.Namespace != "ai-demo" || normalized.ComponentName != "sentiment-api" {
+		t.Fatalf("unexpected normalized names: %#v", normalized)
+	}
+	if normalized.Image != "hashicorp/http-echo:0.2.3" || normalized.Runtime != "http" {
+		t.Fatalf("unexpected image/runtime: %#v", normalized)
+	}
+	if normalized.GovernanceIntent.Tenant != "demo-tenant" ||
+		normalized.GovernanceIntent.Project != "sentiment" ||
+		normalized.GovernanceIntent.Environment != "poc" ||
+		normalized.GovernanceIntent.Owner != "ai-platform" ||
+		normalized.GovernanceIntent.ModelURI != "oss://models/sentiment/v1" ||
+		normalized.GovernanceIntent.Placement.Namespace != "ai-runtime" ||
+		len(normalized.GovernanceIntent.Placement.Clusters) != 1 ||
+		normalized.GovernanceIntent.Placement.Clusters[0] != "local" {
+		t.Fatalf("unexpected governance intent: %#v", normalized.GovernanceIntent)
+	}
+	if normalized.WorkloadIntent.Service.Model.Name != "sentiment" ||
+		normalized.WorkloadIntent.Service.Model.Version != "v1" ||
+		normalized.WorkloadIntent.Service.Endpoint.Type != "ClusterIP" ||
+		normalized.WorkloadIntent.Service.Endpoint.Port != 5678 ||
+		normalized.WorkloadIntent.Service.Endpoint.ServicePort != 80 {
+		t.Fatalf("unexpected service workload intent: %#v", normalized.WorkloadIntent.Service)
+	}
+}
+
+func TestNormalizeAIJobExtractsWorkloadIntent(t *testing.T) {
+	normalized := normalize(t, []byte(`
+apiVersion: ai.oam.dev/v1alpha1
+kind: AIJob
+metadata:
+  name: evaluator-demo
+spec:
+  componentName: batch-evaluator
+  properties:
+    image: busybox:1.36
+    jobKind: evaluation
+    dataset:
+      name: eval-set
+      uri: s3://datasets/eval
+    output:
+      uri: s3://outputs/eval
+    ttlSecondsAfterFinished: 300
+  runtime:
+    runtime: batch
+    framework: shell
+    tenant: demo-tenant
+    project: evaluator
+    datasetURI: s3://datasets/eval
+`))
+
+	if normalized.Kind != "AIJob" || normalized.WorkloadType != "job" {
+		t.Fatalf("unexpected normalized job identity: %#v", normalized)
+	}
+	if normalized.ComponentName != "batch-evaluator" || normalized.Image != "busybox:1.36" || normalized.Runtime != "batch" {
+		t.Fatalf("unexpected normalized job fields: %#v", normalized)
+	}
+	if normalized.GovernanceIntent.Tenant != "demo-tenant" ||
+		normalized.GovernanceIntent.Project != "evaluator" ||
+		normalized.GovernanceIntent.DatasetURI != "s3://datasets/eval" {
+		t.Fatalf("unexpected governance intent: %#v", normalized.GovernanceIntent)
+	}
+	if normalized.WorkloadIntent.Job.JobKind != "evaluation" ||
+		normalized.WorkloadIntent.Job.Dataset.Name != "eval-set" ||
+		normalized.WorkloadIntent.Job.Dataset.URI != "s3://datasets/eval" ||
+		normalized.WorkloadIntent.Job.Output.URI != "s3://outputs/eval" ||
+		normalized.WorkloadIntent.Job.TTLSecondsAfterFinished == nil ||
+		*normalized.WorkloadIntent.Job.TTLSecondsAfterFinished != 300 {
+		t.Fatalf("unexpected job workload intent: %#v", normalized.WorkloadIntent.Job)
+	}
 }
 
 func TestTranslateRejectsAIWorkflow(t *testing.T) {
@@ -256,6 +365,25 @@ spec:
 	}
 }
 
+func TestDomainCommandNormalizesExampleFile(t *testing.T) {
+	root := projectRoot(t)
+	cmd := exec.Command("go", "run", "./references/cmd/ai-domain", "normalize", "-f", "docs/examples/ai-platform/domain/ai-service.yaml")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "GOCACHE=/tmp/kubevela-go-build-cache")
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("normalize command failed: %v\n%s", err, string(out))
+	}
+	var normalized domain.NormalizedObject
+	if err := json.Unmarshal(out, &normalized); err != nil {
+		t.Fatalf("decode normalize output: %v\n%s", err, string(out))
+	}
+	if normalized.Kind != "AIService" || normalized.WorkloadType != "service" || normalized.GovernanceIntent.Tenant != "demo-tenant" {
+		t.Fatalf("unexpected normalize output: %#v", normalized)
+	}
+}
+
 func TestDomainLayerScopeDoesNotAddRuntimeControlPlane(t *testing.T) {
 	root := projectRoot(t)
 	for _, path := range []string{
@@ -283,6 +411,15 @@ func translate(t *testing.T, in []byte) *unstructured.Unstructured {
 		t.Fatalf("TranslateYAML returned error: %v", err)
 	}
 	return decodeApplication(t, out)
+}
+
+func normalize(t *testing.T, in []byte) domain.NormalizedObject {
+	t.Helper()
+	normalized, err := domain.NormalizeYAML(in)
+	if err != nil {
+		t.Fatalf("NormalizeYAML returned error: %v", err)
+	}
+	return normalized
 }
 
 func decodeApplication(t *testing.T, out []byte) *unstructured.Unstructured {

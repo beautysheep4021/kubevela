@@ -27,6 +27,9 @@ func main() {
 		case "validate":
 			runValidate(os.Args[2:])
 			return
+		case "normalize":
+			runNormalize(os.Args[2:])
+			return
 		case "status":
 			runStatus(os.Args[2:])
 			return
@@ -95,6 +98,33 @@ func runValidate(args []string) {
 	if len(result.Errors) > 0 {
 		os.Exit(1)
 	}
+}
+
+func runNormalize(args []string) {
+	flags := flag.NewFlagSet("normalize", flag.ExitOnError)
+	file := flags.String("f", "", "AI domain YAML file to normalize")
+	_ = flags.Parse(args)
+
+	if *file == "" {
+		fmt.Fprintln(os.Stderr, "-f is required")
+		os.Exit(2)
+	}
+	in, err := os.ReadFile(*file)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read %s: %v\n", *file, err)
+		os.Exit(1)
+	}
+	normalized, err := domain.NormalizeYAML(in)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "normalize %s: %v\n", *file, err)
+		os.Exit(1)
+	}
+	out, err := json.MarshalIndent(normalized, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "encode normalize output: %v\n", err)
+		os.Exit(1)
+	}
+	_, _ = os.Stdout.Write(append(out, '\n'))
 }
 
 func runStatus(args []string) {

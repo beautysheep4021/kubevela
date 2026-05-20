@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"strconv"
 
 	yamlv3 "go.yaml.in/yaml/v3"
 	"sigs.k8s.io/yaml"
@@ -15,6 +16,78 @@ const (
 type ValidationResult struct {
 	Errors   []string `json:"errors,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
+}
+
+type NormalizedObject struct {
+	APIVersion       string           `json:"apiVersion"`
+	Kind             string           `json:"kind"`
+	Name             string           `json:"name"`
+	Namespace        string           `json:"namespace,omitempty"`
+	ComponentName    string           `json:"componentName"`
+	WorkloadType     string           `json:"workloadType"`
+	Image            string           `json:"image"`
+	Runtime          string           `json:"runtime,omitempty"`
+	GovernanceIntent GovernanceIntent `json:"governanceIntent"`
+	WorkloadIntent   WorkloadIntent   `json:"workloadIntent"`
+}
+
+type GovernanceIntent struct {
+	Framework   string          `json:"framework,omitempty"`
+	Tenant      string          `json:"tenant,omitempty"`
+	Project     string          `json:"project,omitempty"`
+	Environment string          `json:"environment,omitempty"`
+	Owner       string          `json:"owner,omitempty"`
+	ModelURI    string          `json:"modelURI,omitempty"`
+	DatasetURI  string          `json:"datasetURI,omitempty"`
+	Placement   PlacementIntent `json:"placement,omitempty"`
+}
+
+type PlacementIntent struct {
+	Namespace string   `json:"namespace,omitempty"`
+	Clusters  []string `json:"clusters,omitempty"`
+}
+
+type WorkloadIntent struct {
+	Service *ServiceIntent `json:"service,omitempty"`
+	Job     *JobIntent     `json:"job,omitempty"`
+}
+
+type ServiceIntent struct {
+	Replicas *int64         `json:"replicas,omitempty"`
+	Model    ModelIntent    `json:"model,omitempty"`
+	Endpoint EndpointIntent `json:"endpoint,omitempty"`
+}
+
+type ModelIntent struct {
+	Name    string `json:"name,omitempty"`
+	Version string `json:"version,omitempty"`
+	URI     string `json:"uri,omitempty"`
+}
+
+type EndpointIntent struct {
+	Port        int64  `json:"port,omitempty"`
+	ServicePort int64  `json:"servicePort,omitempty"`
+	TargetPort  int64  `json:"targetPort,omitempty"`
+	Type        string `json:"type,omitempty"`
+}
+
+type JobIntent struct {
+	JobKind                 string     `json:"jobKind,omitempty"`
+	Dataset                 DatasetRef `json:"dataset,omitempty"`
+	Output                  OutputRef  `json:"output,omitempty"`
+	TTLSecondsAfterFinished *int64     `json:"ttlSecondsAfterFinished,omitempty"`
+	Parallelism             *int64     `json:"parallelism,omitempty"`
+	Completions             *int64     `json:"completions,omitempty"`
+	BackoffLimit            *int64     `json:"backoffLimit,omitempty"`
+}
+
+type DatasetRef struct {
+	Name string `json:"name,omitempty"`
+	URI  string `json:"uri,omitempty"`
+}
+
+type OutputRef struct {
+	URI string `json:"uri,omitempty"`
 }
 
 // TranslateYAML converts one AI domain document into one native KubeVela Application.
@@ -41,6 +114,38 @@ func ValidateYAML(in []byte) (ValidationResult, error) {
 		return ValidationResult{}, err
 	}
 	return validateDocument(doc), nil
+}
+
+func NormalizeYAML(in []byte) (NormalizedObject, error) {
+	doc, err := decodeDomainDocument(in)
+	if err != nil {
+		return NormalizedObject{}, err
+	}
+	result := validateDocument(doc)
+	if len(result.Errors) > 0 {
+		return NormalizedObject{}, fmt.Errorf("invalid AI domain YAML: %s", result.Errors[0])
+	}
+	componentType, err := componentTypeForKind(doc.Kind)
+	if err != nil {
+		return NormalizedObject{}, err
+	}
+	componentName := doc.Spec.ComponentName
+	if componentName == "" {
+		componentName = doc.Metadata.Name
+	}
+	normalized := NormalizedObject{
+		APIVersion:       doc.APIVersion,
+		Kind:             doc.Kind,
+		Name:             doc.Metadata.Name,
+		Namespace:        doc.Metadata.Namespace,
+		ComponentName:    componentName,
+		WorkloadType:     workloadType(componentType),
+		Image:            stringValue(doc.Spec.Properties, "image"),
+		Runtime:          stringValue(doc.Spec.Runtime, "runtime"),
+		GovernanceIntent: governanceIntent(doc),
+		WorkloadIntent:   workloadIntent(doc, componentType),
+	}
+	return normalized, nil
 }
 
 func decodeDomainDocument(in []byte) (domainDocument, error) {
@@ -205,4 +310,123 @@ func topologyPolicy(p placement) map[string]interface{} {
 		"type":       "topology",
 		"properties": properties,
 	}
+}
+
+func workloadType(componentType string) string {
+	switch componentType {
+	case "ai-service":
+		return "service"
+	case "ai-job":
+		return "job"
+	default:
+		return componentType
+	}
+}
+
+func governanceIntent(doc domainDocument) GovernanceIntent {
+	return GovernanceIntent{
+		Framework:   stringValue(doc.Spec.Runtime, "framework"),
+		Tenant:      stringValue(doc.Spec.Runtime, "tenant"),
+		Project:     stringValue(doc.Spec.Runtime, "project"),
+		Environment: stringValue(doc.Spec.Runtime, "environment"),
+		Owner:       stringValue(doc.Spec.Runtime, "owner"),
+		ModelURI:    stringValue(doc.Spec.Runtime, "modelURI"),
+		DatasetURI:  stringValue(doc.Spec.Runtime, "datasetURI"),
+		Placement: PlacementIntent{
+			Namespace: doc.Spec.Placement.Namespace,
+			Clusters:  append([]string(nil), doc.Spec.Placement.Clusters...),
+		},
+	}
+}
+
+func workloadIntent(doc domainDocument, componentType string) WorkloadIntent {
+	switch componentType {
+	case "ai-service":
+		return WorkloadIntent{Service: &ServiceIntent{
+			Replicas: intPtr(doc.Spec.Properties, "replicas"),
+			Model: ModelIntent{
+				Name:    stringValue(nestedMap(doc.Spec.Properties, "model"), "name"),
+				Version: stringValue(nestedMap(doc.Spec.Properties, "model"), "version"),
+				URI:     stringValue(nestedMap(doc.Spec.Properties, "model"), "uri"),
+			},
+			Endpoint: EndpointIntent{
+				Port:        intValue(nestedMap(doc.Spec.Properties, "endpoint"), "port"),
+				ServicePort: intValue(nestedMap(doc.Spec.Properties, "endpoint"), "servicePort"),
+				TargetPort:  intValue(nestedMap(doc.Spec.Properties, "endpoint"), "targetPort"),
+				Type:        stringValue(nestedMap(doc.Spec.Properties, "endpoint"), "type"),
+			},
+		}}
+	case "ai-job":
+		return WorkloadIntent{Job: &JobIntent{
+			JobKind:                 stringValue(doc.Spec.Properties, "jobKind"),
+			Dataset:                 DatasetRef{Name: stringValue(nestedMap(doc.Spec.Properties, "dataset"), "name"), URI: stringValue(nestedMap(doc.Spec.Properties, "dataset"), "uri")},
+			Output:                  OutputRef{URI: stringValue(nestedMap(doc.Spec.Properties, "output"), "uri")},
+			TTLSecondsAfterFinished: intPtr(doc.Spec.Properties, "ttlSecondsAfterFinished"),
+			Parallelism:             intPtr(doc.Spec.Properties, "parallelism"),
+			Completions:             intPtr(doc.Spec.Properties, "completions"),
+			BackoffLimit:            intPtr(doc.Spec.Properties, "backoffLimit"),
+		}}
+	default:
+		return WorkloadIntent{}
+	}
+}
+
+func nestedMap(values map[string]interface{}, key string) map[string]interface{} {
+	if values == nil {
+		return nil
+	}
+	nested, _ := values[key].(map[string]interface{})
+	return nested
+}
+
+func stringValue(values map[string]interface{}, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, ok := values[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		return fmt.Sprint(typed)
+	}
+}
+
+func intValue(values map[string]interface{}, key string) int64 {
+	if values == nil {
+		return 0
+	}
+	value, ok := values[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return int64(typed)
+	case int64:
+		return typed
+	case uint64:
+		return int64(typed)
+	case float64:
+		return int64(typed)
+	case string:
+		parsed, _ := strconv.ParseInt(typed, 10, 64)
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func intPtr(values map[string]interface{}, key string) *int64 {
+	if values == nil {
+		return nil
+	}
+	if _, ok := values[key]; !ok {
+		return nil
+	}
+	value := intValue(values, key)
+	return &value
 }

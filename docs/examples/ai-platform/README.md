@@ -14,19 +14,34 @@ The first PoC intentionally does not introduce `AIService`, `AIJob`, or `AIWorkf
 
 ## Minimal Domain Control Layer
 
-The minimal domain-control improvement is an offline translator from AI domain YAML to native KubeVela `Application` YAML. It lets a northbound surface accept `AIService` and `AIJob` shaped documents without installing new Kubernetes CRDs or adding a new reconciliation loop.
+The minimal domain-control improvement is an offline domain adapter for AI domain YAML. It lets a northbound surface accept `AIService` and `AIJob` shaped documents without installing new Kubernetes CRDs or adding a new reconciliation loop.
 
 The supported domain inputs are:
 
 - `docs/examples/ai-platform/domain/ai-service.yaml`
 - `docs/examples/ai-platform/domain/ai-job.yaml`
 
-The translator maps:
+The `translate` path maps:
 
 - `kind: AIService` to a KubeVela component with `type: ai-service`
 - `kind: AIJob` to a KubeVela component with `type: ai-job`
 - `spec.runtime` to an `ai-runtime` trait
 - `spec.placement` to native KubeVela `topology` policy and `deploy` workflow
+
+The `normalize` path extracts a stable JSON contract from the same domain YAML:
+
+```bash
+ai-domain normalize -f docs/examples/ai-platform/domain/ai-service.yaml
+ai-domain normalize -f docs/examples/ai-platform/domain/ai-job.yaml
+```
+
+The normalized output separates:
+
+- identity fields: `kind`, `name`, `namespace`, `componentName`, `workloadType`, `image`, and `runtime`.
+- `governanceIntent`: tenant, project, environment, owner, model or dataset URI, and placement.
+- `workloadIntent`: service model and endpoint intent, or job kind, dataset, output, retry, and TTL intent.
+
+This gives the domain-control layer a small semantic contract for later northbound APIs, policy checks, and governance projection while still keeping KubeVela `Application` as the runtime object.
 
 This domain layer is intentionally not a runtime API server extension. The generated output is still `apiVersion: core.oam.dev/v1beta1`, `kind: Application`, so KubeVela remains the only reconciler for these workloads.
 
