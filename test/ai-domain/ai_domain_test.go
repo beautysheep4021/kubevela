@@ -152,6 +152,26 @@ spec:
 	}
 }
 
+func TestValidateAIRuntimeRequiresRuntimeWhenTraitIsPresent(t *testing.T) {
+	result, err := domain.ValidateYAML([]byte(`
+apiVersion: ai.oam.dev/v1alpha1
+kind: AIService
+metadata:
+  name: invalid-runtime
+spec:
+  properties:
+    image: hashicorp/http-echo:0.2.3
+  runtime:
+    framework: demo
+`))
+	if err != nil {
+		t.Fatalf("ValidateYAML returned error: %v", err)
+	}
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "spec.runtime.runtime is required when spec.runtime is set") {
+		t.Fatalf("expected missing runtime validation error, got %#v", result.Errors)
+	}
+}
+
 func TestValidateWarnsWhenComponentNameDefaultsToApplicationName(t *testing.T) {
 	result, err := domain.ValidateYAML([]byte(`
 apiVersion: ai.oam.dev/v1alpha1

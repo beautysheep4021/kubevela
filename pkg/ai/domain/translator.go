@@ -75,6 +75,11 @@ func validateDocument(doc domainDocument) ValidationResult {
 			result.Errors = append(result.Errors, "spec.properties.jobKind is required for AIJob")
 		}
 	}
+	if len(doc.Spec.Runtime) > 0 {
+		if _, ok := doc.Spec.Runtime["runtime"]; !ok {
+			result.Errors = append(result.Errors, "spec.runtime.runtime is required when spec.runtime is set")
+		}
+	}
 	return result
 }
 
