@@ -63,7 +63,7 @@ Open the minimal frontend PoC:
 http://127.0.0.1:8088/
 ```
 
-The page provides a YAML editor, built-in `AIService` and `AIJob` samples, a validate action, and a normalize action that renders identity, `governanceIntent`, and `workloadIntent` for quick platform verification.
+The page provides a form-first user workspace for `AIService` and `AIJob` intent submission. It generates domain YAML from form fields, keeps the YAML visible for review, and exposes validate and normalize actions that render identity, `governanceIntent`, and `workloadIntent` for quick platform verification. The deployment button is intentionally disabled until the northbound write path is added.
 
 Available endpoints:
 

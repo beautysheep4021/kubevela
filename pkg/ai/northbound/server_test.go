@@ -38,10 +38,16 @@ func TestServerServesConsolePage(t *testing.T) {
 	}
 	body := recorder.Body.String()
 	for _, expected := range []string{
-		"智算纳管北向验证台",
+		"使用方工作台",
+		"提交意图",
 		"领域 YAML",
 		"治理意图",
 		"工作负载意图",
+		"任务类型",
+		"模型名称",
+		"数据集 URI",
+		"生成 YAML",
+		"提交部署（后续接入）",
 		"/api/v1/ai/validate",
 		"/api/v1/ai/normalize",
 		"governanceIntent",
