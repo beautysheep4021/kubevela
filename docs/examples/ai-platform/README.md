@@ -49,7 +49,7 @@ This domain layer is intentionally not a runtime API server extension. The gener
 
 ## Minimal Northbound API Layer
 
-The minimal northbound API is a small HTTP adapter over the existing domain-control functions. It does not add storage, authentication, a database, a controller, or any write path to the cluster. Its first purpose is to provide a stable platform-facing API for validation and semantic normalization.
+The minimal northbound API is a small HTTP adapter over the existing domain-control functions. It does not add storage, authentication, a database, or a new controller. Its first purpose is to provide a stable platform-facing API for validation, semantic normalization, and an explicit deployment handoff to KubeVela `Application`.
 
 Start the API locally:
 
@@ -57,19 +57,31 @@ Start the API locally:
 ai-northbound --addr 127.0.0.1:8088
 ```
 
+When the process can load an in-cluster config, the default kubeconfig, or an explicit kubeconfig, the deployment endpoint is enabled:
+
+```bash
+ai-northbound --addr 0.0.0.0:18088 --kubeconfig /root/.kube/config
+```
+
+If no kubeconfig is available, the server still starts for frontend, validation, and normalization checks, but `POST /api/v1/ai/applications` returns `503` because deployment is not configured.
+
 Open the minimal frontend PoC:
 
 ```text
 http://127.0.0.1:8088/
 ```
 
-The page provides a form-first user workspace for `AIService` and `AIJob` intent submission. It generates domain YAML from form fields, keeps the YAML visible for review, and exposes validate and normalize actions that render identity, `governanceIntent`, and `workloadIntent` for quick platform verification. The deployment button is intentionally disabled until the northbound write path is added.
+The page provides a form-first user workspace for `AIService` and `AIJob` intent submission. It generates domain YAML from form fields, keeps the YAML visible for review, and exposes validate, normalize, and deploy actions. The deploy action posts the same domain YAML to the northbound API, translates it into a native KubeVela `Application`, and applies it through Kubernetes server-side apply.
+
+The frontend keeps `服务端 DryRun` checked by default. With DryRun enabled, Kubernetes validates the generated `Application` without creating or updating it. To perform a real deployment, uncheck DryRun and click `提交部署`.
 
 Available endpoints:
 
 - `GET /healthz` returns `ok`.
 - `POST /api/v1/ai/validate` accepts an `AIService` or `AIJob` YAML document and returns validation JSON.
 - `POST /api/v1/ai/normalize` accepts the same YAML document and returns the normalized identity, governance intent, and workload intent JSON.
+- `POST /api/v1/ai/applications?dryRun=true` accepts the same YAML document, translates it to a native KubeVela `Application`, and applies it with Kubernetes server-side dry-run.
+- `POST /api/v1/ai/applications` performs the same translation and applies the `Application` for real when deployment is configured.
 
 Example:
 
@@ -78,7 +90,21 @@ curl -sS --data-binary @docs/examples/ai-platform/domain/ai-service.yaml \
   http://127.0.0.1:8088/api/v1/ai/normalize
 ```
 
-This layer is intentionally read-only with respect to Kubernetes. Creation and update remain explicit through `ai-domain apply` until the northbound API contract is validated.
+Dry-run deployment example:
+
+```bash
+curl -sS --data-binary @docs/examples/ai-platform/domain/ai-service.yaml \
+  'http://127.0.0.1:8088/api/v1/ai/applications?dryRun=true'
+```
+
+Real deployment example:
+
+```bash
+curl -sS --data-binary @docs/examples/ai-platform/domain/ai-service.yaml \
+  http://127.0.0.1:8088/api/v1/ai/applications
+```
+
+This layer is intentionally narrow with respect to Kubernetes. It can create or update the generated KubeVela `Application`, but it still does not store platform state, reconcile workloads itself, or bypass KubeVela's native control plane.
 
 ## Minimal Readonly Observe Layer
 

@@ -2,6 +2,7 @@ package northbound
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,10 @@ import (
 	"testing"
 
 	"github.com/oam-dev/kubevela/pkg/ai/domain"
+	domainapply "github.com/oam-dev/kubevela/pkg/ai/domain/apply"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 func TestServerHealthz(t *testing.T) {
@@ -47,15 +52,64 @@ func TestServerServesConsolePage(t *testing.T) {
 		"模型名称",
 		"数据集 URI",
 		"生成 YAML",
-		"提交部署（后续接入）",
+		"提交部署",
+		"服务端 DryRun",
 		"/api/v1/ai/validate",
 		"/api/v1/ai/normalize",
+		"/api/v1/ai/applications",
 		"governanceIntent",
 		"workloadIntent",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("console page missing %q", expected)
 		}
+	}
+}
+
+func TestServerDeploysDomainYAMLWithDryRun(t *testing.T) {
+	applier := &recordingApplicationApplier{}
+	server := NewServerWithOptions(Options{Applier: applier})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/applications?dryRun=true", bytes.NewReader([]byte(validAIServiceYAML()))))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var result DeployResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if result.Application.Name != "sentiment-demo" || result.Application.Namespace != "ai-demo" || !result.Application.DryRun {
+		t.Fatalf("unexpected application result: %#v", result.Application)
+	}
+	if result.Normalized.Kind != "AIService" || result.Normalized.GovernanceIntent.Tenant != "demo-tenant" {
+		t.Fatalf("unexpected normalized payload: %#v", result.Normalized)
+	}
+	if !applier.called || applier.namespace != "ai-demo" || applier.name != "sentiment-demo" {
+		t.Fatalf("unexpected applier call: %#v", applier)
+	}
+	if len(applier.options.DryRun) != 1 || applier.options.DryRun[0] != metav1.DryRunAll {
+		t.Fatalf("expected server dry-run option, got %#v", applier.options.DryRun)
+	}
+	if !strings.Contains(string(applier.content), "kind: Application") || !strings.Contains(string(applier.content), "type: ai-service") {
+		t.Fatalf("expected translated Application YAML, got:\n%s", string(applier.content))
+	}
+}
+
+func TestServerDeployReturnsUnavailableWhenApplyIsNotConfigured(t *testing.T) {
+	server := NewServer()
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/applications", bytes.NewReader([]byte(validAIServiceYAML()))))
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
+	}
+	var payload errorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if !strings.Contains(payload.Error, "deployment is not configured") {
+		t.Fatalf("unexpected error: %#v", payload)
 	}
 }
 
@@ -165,3 +219,22 @@ spec:
     runtime: batch
 `
 }
+
+type recordingApplicationApplier struct {
+	called    bool
+	namespace string
+	name      string
+	content   []byte
+	options   metav1.PatchOptions
+}
+
+func (a *recordingApplicationApplier) ApplyApplication(_ context.Context, namespace, name string, content []byte, opts metav1.PatchOptions) (*unstructured.Unstructured, error) {
+	a.called = true
+	a.namespace = namespace
+	a.name = name
+	a.content = append([]byte(nil), content...)
+	a.options = opts
+	return &unstructured.Unstructured{}, nil
+}
+
+var _ domainapply.ApplicationApplier = (*recordingApplicationApplier)(nil)

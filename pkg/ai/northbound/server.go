@@ -5,22 +5,38 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/oam-dev/kubevela/pkg/ai/domain"
+	domainapply "github.com/oam-dev/kubevela/pkg/ai/domain/apply"
 )
 
 const maxRequestBodyBytes = 1 << 20
+
+type Options struct {
+	Applier domainapply.ApplicationApplier
+}
 
 type errorResponse struct {
 	Error string `json:"error"`
 }
 
+type DeployResponse struct {
+	Normalized  domain.NormalizedObject `json:"normalized"`
+	Application domainapply.Result      `json:"application"`
+}
+
 func NewServer() http.Handler {
+	return NewServerWithOptions(Options{})
+}
+
+func NewServerWithOptions(options Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", console)
 	mux.HandleFunc("/healthz", healthz)
 	mux.HandleFunc("/api/v1/ai/validate", validate)
 	mux.HandleFunc("/api/v1/ai/normalize", normalize)
+	mux.HandleFunc("/api/v1/ai/applications", deploy(options.Applier))
 	return mux
 }
 
@@ -84,6 +100,57 @@ func normalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, normalized)
+}
+
+func deploy(applier domainapply.ApplicationApplier) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if applier == nil {
+			writeError(w, http.StatusServiceUnavailable, "deployment is not configured")
+			return
+		}
+		content, err := readBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		normalized, err := domain.NormalizeYAML(content)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		appYAML, err := domain.TranslateYAML(content)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		result, err := domainapply.ApplyYAMLWithApplier(r.Context(), applier, appYAML, domainapply.Options{
+			DryRun: parseDryRun(r),
+		})
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, DeployResponse{
+			Normalized:  normalized,
+			Application: result,
+		})
+	}
+}
+
+func parseDryRun(r *http.Request) bool {
+	raw := r.URL.Query().Get("dryRun")
+	if raw == "" {
+		return false
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false
+	}
+	return value
 }
 
 func readBody(r *http.Request) ([]byte, error) {

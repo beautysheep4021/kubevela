@@ -121,6 +121,15 @@ const consoleHTML = `<!doctype html>
       flex-wrap: wrap;
       gap: 10px;
     }
+    .deploy-options {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 22px 18px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 900;
+    }
     .form-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -147,6 +156,11 @@ const consoleHTML = `<!doctype html>
       background: rgba(255,255,255,.7);
       outline: none;
       font: inherit;
+    }
+    input[type="checkbox"] {
+      width: auto;
+      min-height: auto;
+      accent-color: var(--moss);
     }
     input:focus, select:focus {
       border-color: rgba(47, 95, 116, .48);
@@ -277,7 +291,7 @@ const consoleHTML = `<!doctype html>
       <div>
         <div class="label">智算纳管 · 使用方工作台 PoC</div>
         <h1>使用方工作台</h1>
-        <p class="lede">面向业务用户的提交意图入口。用户先通过表单描述模型服务或批任务，页面生成领域 YAML，并调用北向 API 完成校验和语义归一化预览。</p>
+        <p class="lede">面向业务用户的提交意图入口。用户先通过表单描述模型服务或批任务，页面生成领域 YAML，并调用北向 API 完成校验、语义归一化和提交部署。</p>
       </div>
       <div class="status-strip">
         <div class="status-card">
@@ -289,8 +303,8 @@ const consoleHTML = `<!doctype html>
           <div class="metric">/api/v1/ai/validate</div>
         </div>
         <div class="status-card">
-          <div class="label">归一化入口</div>
-          <div class="metric">/api/v1/ai/normalize</div>
+          <div class="label">部署入口</div>
+          <div class="metric">/api/v1/ai/applications</div>
         </div>
       </div>
     </section>
@@ -305,7 +319,7 @@ const consoleHTML = `<!doctype html>
             <button class="ghost" id="generate">生成 YAML</button>
             <button class="secondary" id="validate">校验</button>
             <button id="normalize">归一化</button>
-            <button class="ghost" disabled>提交部署（后续接入）</button>
+            <button id="deploy">提交部署</button>
           </div>
         </div>
         <div class="form-grid">
@@ -411,6 +425,10 @@ const consoleHTML = `<!doctype html>
           <span class="label">领域 YAML</span>
           <textarea id="yaml" spellcheck="false"></textarea>
         </div>
+        <label class="deploy-options">
+          <input id="dry-run" type="checkbox" checked>
+          服务端 DryRun：只验证 Kubernetes 接收能力，不实际落集群；取消勾选后才会真实创建或更新 Application。
+        </label>
       </section>
 
       <section class="panel">
@@ -647,6 +665,10 @@ const consoleHTML = `<!doctype html>
         });
       });
     }
+    function deploy() {
+      var dryRun = document.getElementById("dry-run").checked;
+      return post("/api/v1/ai/applications?dryRun=" + dryRun);
+    }
     document.getElementById("load-service").onclick = function() {
       fillServiceForm();
       lastAction.textContent = "已载入服务样例";
@@ -678,6 +700,16 @@ const consoleHTML = `<!doctype html>
       post("/api/v1/ai/normalize").then(function(data) {
         renderCards(data);
         setJSON(data, "已归一化");
+      }).catch(function(err) {
+        setError(err.message);
+      });
+    };
+    document.getElementById("deploy").onclick = function() {
+      deploy().then(function(data) {
+        renderCards(data.normalized || {});
+        cards.appendChild(card("部署结果", data.application && data.application.dryRun ? "DryRun 通过" : "已提交", "ok"));
+        cards.appendChild(card("Application", data.application && ((data.application.namespace || "default") + "/" + data.application.name), "ok"));
+        setJSON(data, data.application && data.application.dryRun ? "已 DryRun" : "已提交部署");
       }).catch(function(err) {
         setError(err.message);
       });

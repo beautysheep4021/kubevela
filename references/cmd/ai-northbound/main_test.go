@@ -21,3 +21,16 @@ func TestParseArgsAcceptsAddrOverride(t *testing.T) {
 		t.Fatalf("addr = %q, want 0.0.0.0:18088", args.addr)
 	}
 }
+
+func TestParseArgsAcceptsKubeconfigOverride(t *testing.T) {
+	args, err := parseArgs([]string{"--addr", "0.0.0.0:18088", "--kubeconfig", "/root/.kube/config"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	if args.addr != "0.0.0.0:18088" {
+		t.Fatalf("addr = %q, want 0.0.0.0:18088", args.addr)
+	}
+	if args.kubeconfig != "/root/.kube/config" {
+		t.Fatalf("kubeconfig = %q, want /root/.kube/config", args.kubeconfig)
+	}
+}
