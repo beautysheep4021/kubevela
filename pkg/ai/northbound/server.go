@@ -17,10 +17,24 @@ type errorResponse struct {
 
 func NewServer() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", console)
 	mux.HandleFunc("/healthz", healthz)
 	mux.HandleFunc("/api/v1/ai/validate", validate)
 	mux.HandleFunc("/api/v1/ai/normalize", normalize)
 	return mux
+}
+
+func console(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(consoleHTML))
 }
 
 func healthz(w http.ResponseWriter, r *http.Request) {

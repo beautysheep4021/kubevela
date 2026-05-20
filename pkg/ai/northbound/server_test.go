@@ -24,6 +24,32 @@ func TestServerHealthz(t *testing.T) {
 	}
 }
 
+func TestServerServesConsolePage(t *testing.T) {
+	server := NewServer()
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	contentType := recorder.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "text/html") {
+		t.Fatalf("content-type = %q, want text/html", contentType)
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		"AI Northbound Console",
+		"/api/v1/ai/validate",
+		"/api/v1/ai/normalize",
+		"governanceIntent",
+		"workloadIntent",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("console page missing %q", expected)
+		}
+	}
+}
+
 func TestServerValidatesDomainYAML(t *testing.T) {
 	server := NewServer()
 	recorder := httptest.NewRecorder()

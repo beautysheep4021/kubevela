@@ -57,6 +57,14 @@ Start the API locally:
 ai-northbound --addr 127.0.0.1:8088
 ```
 
+Open the minimal frontend PoC:
+
+```text
+http://127.0.0.1:8088/
+```
+
+The page provides a YAML editor, built-in `AIService` and `AIJob` samples, a validate action, and a normalize action that renders identity, `governanceIntent`, and `workloadIntent` for quick platform verification.
+
 Available endpoints:
 
 - `GET /healthz` returns `ok`.
