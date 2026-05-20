@@ -47,6 +47,31 @@ This domain layer is intentionally not a runtime API server extension. The gener
 
 `AIWorkflow` remains out of first PoC scope and is rejected by the translator. Workflow-level orchestration should be added only after the service and job management boundaries are validated in a real cluster.
 
+## Minimal Northbound API Layer
+
+The minimal northbound API is a small HTTP adapter over the existing domain-control functions. It does not add storage, authentication, a database, a controller, or any write path to the cluster. Its first purpose is to provide a stable platform-facing API for validation and semantic normalization.
+
+Start the API locally:
+
+```bash
+ai-northbound --addr 127.0.0.1:8088
+```
+
+Available endpoints:
+
+- `GET /healthz` returns `ok`.
+- `POST /api/v1/ai/validate` accepts an `AIService` or `AIJob` YAML document and returns validation JSON.
+- `POST /api/v1/ai/normalize` accepts the same YAML document and returns the normalized identity, governance intent, and workload intent JSON.
+
+Example:
+
+```bash
+curl -sS --data-binary @docs/examples/ai-platform/domain/ai-service.yaml \
+  http://127.0.0.1:8088/api/v1/ai/normalize
+```
+
+This layer is intentionally read-only with respect to Kubernetes. Creation and update remain explicit through `ai-domain apply` until the northbound API contract is validated.
+
 ## Minimal Readonly Observe Layer
 
 The minimal observe improvement is a readonly status summary in the `ai-domain` command. It does not install Prometheus, write to a database, add a controller, add a UI, or reconcile cluster state. It only reads existing KubeVela and Kubernetes objects and aggregates them into JSON.
