@@ -60,6 +60,7 @@ type PodSummary struct {
 	ReadyContainers int64              `json:"readyContainers"`
 	TotalContainers int64              `json:"totalContainers"`
 	Containers      []ContainerSummary `json:"containers,omitempty"`
+	Events          []EventSummary     `json:"events,omitempty"`
 }
 
 type ContainerSummary struct {
@@ -70,6 +71,14 @@ type ContainerSummary struct {
 	Reason       string `json:"reason,omitempty"`
 	Message      string `json:"message,omitempty"`
 	ExitCode     int64  `json:"exitCode,omitempty"`
+}
+
+type EventSummary struct {
+	Type    string `json:"type,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+	Count   int64  `json:"count,omitempty"`
+	LastAt  string `json:"lastAt,omitempty"`
 }
 
 type Warning struct {
@@ -287,12 +296,51 @@ func summarizePods(objects []*unstructured.Unstructured, appName, componentName,
 				Message:  orphanWarningMessage(pod.Phase),
 			})
 		}
+		pod.Events = summarizeEvents(objects, obj)
 		pods = append(pods, pod)
 	}
 	sort.Slice(pods, func(i, j int) bool {
 		return pods[i].Name < pods[j].Name
 	})
 	return pods
+}
+
+func summarizeEvents(objects []*unstructured.Unstructured, pod *unstructured.Unstructured) []EventSummary {
+	var events []EventSummary
+	for _, obj := range objects {
+		if obj.GetKind() != "Event" || nestedString(obj.Object, "involvedObject", "kind") != "Pod" {
+			continue
+		}
+		if nestedString(obj.Object, "involvedObject", "namespace") != pod.GetNamespace() || nestedString(obj.Object, "involvedObject", "name") != pod.GetName() {
+			continue
+		}
+		events = append(events, EventSummary{
+			Type:    nestedString(obj.Object, "type"),
+			Reason:  nestedString(obj.Object, "reason"),
+			Message: nestedString(obj.Object, "message"),
+			Count:   nestedInt64(obj.Object, "count"),
+			LastAt:  eventLastAt(obj),
+		})
+	}
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].LastAt < events[j].LastAt
+	})
+	return events
+}
+
+func eventLastAt(obj *unstructured.Unstructured) string {
+	for _, field := range []string{"lastTimestamp", "eventTime", "metadata.creationTimestamp"} {
+		if field == "metadata.creationTimestamp" {
+			if value := nestedString(obj.Object, "metadata", "creationTimestamp"); value != "" {
+				return value
+			}
+			continue
+		}
+		if value := nestedString(obj.Object, field); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func summarizeContainer(status map[string]interface{}) ContainerSummary {
