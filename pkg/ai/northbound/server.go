@@ -1,29 +1,43 @@
 package northbound
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/oam-dev/kubevela/pkg/ai/domain"
 	domainapply "github.com/oam-dev/kubevela/pkg/ai/domain/apply"
+	"github.com/oam-dev/kubevela/pkg/ai/observe"
 )
 
 const maxRequestBodyBytes = 1 << 20
 
 type Options struct {
 	Applier domainapply.ApplicationApplier
+	Reader  ApplicationReader
 }
 
 type errorResponse struct {
 	Error string `json:"error"`
 }
 
+type ApplicationReader interface {
+	ListApplications(ctx context.Context, namespace string) ([]observe.ApplicationListItem, error)
+	SummarizeApplication(ctx context.Context, namespace, name string) (*observe.Summary, error)
+}
+
 type DeployResponse struct {
 	Normalized  domain.NormalizedObject `json:"normalized"`
 	Application domainapply.Result      `json:"application"`
+}
+
+type ApplicationsResponse struct {
+	Items []observe.ApplicationListItem `json:"items"`
 }
 
 func NewServer() http.Handler {
@@ -36,7 +50,8 @@ func NewServerWithOptions(options Options) http.Handler {
 	mux.HandleFunc("/healthz", healthz)
 	mux.HandleFunc("/api/v1/ai/validate", validate)
 	mux.HandleFunc("/api/v1/ai/normalize", normalize)
-	mux.HandleFunc("/api/v1/ai/applications", deploy(options.Applier))
+	mux.HandleFunc("/api/v1/ai/applications", applications(options))
+	mux.HandleFunc("/api/v1/ai/applications/", applicationDetail(options.Reader))
 	return mux
 }
 
@@ -100,6 +115,77 @@ func normalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, normalized)
+}
+
+func applications(options Options) http.HandlerFunc {
+	deployHandler := deploy(options.Applier)
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			listApplications(options.Reader, w, r)
+		case http.MethodPost:
+			deployHandler(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	}
+}
+
+func listApplications(reader ApplicationReader, w http.ResponseWriter, r *http.Request) {
+	if reader == nil {
+		writeError(w, http.StatusServiceUnavailable, "application reader is not configured")
+		return
+	}
+	items, err := reader.ListApplications(r.Context(), r.URL.Query().Get("namespace"))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ApplicationsResponse{Items: items})
+}
+
+func applicationDetail(reader ApplicationReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if reader == nil {
+			writeError(w, http.StatusServiceUnavailable, "application reader is not configured")
+			return
+		}
+		namespace, name, ok := parseApplicationDetailPath(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		summary, err := reader.SummarizeApplication(r.Context(), namespace, name)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, summary)
+	}
+}
+
+func parseApplicationDetailPath(path string) (string, string, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/ai/applications/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 3 && parts[2] == "status" {
+		parts = parts[:2]
+	}
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	namespace, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return "", "", false
+	}
+	name, err := url.PathUnescape(parts[1])
+	if err != nil {
+		return "", "", false
+	}
+	return namespace, name, true
 }
 
 func deploy(applier domainapply.ApplicationApplier) http.HandlerFunc {

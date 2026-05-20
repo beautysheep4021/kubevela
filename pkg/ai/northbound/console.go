@@ -226,6 +226,44 @@ const consoleHTML = `<!doctype html>
       gap: 14px;
       margin-bottom: 16px;
     }
+    .task-list {
+      display: grid;
+      gap: 10px;
+      margin: 18px 0;
+    }
+    .task-row {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1.15fr .7fr .7fr .7fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 13px 14px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      color: var(--ink);
+      background: rgba(255,255,255,.58);
+      text-align: left;
+      cursor: pointer;
+    }
+    .task-row:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 18px rgba(24, 33, 31, .12);
+    }
+    .task-row strong, .task-row span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pill {
+      display: inline-flex;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 5px 9px;
+      color: #f7fff7;
+      background: var(--moss);
+      font-size: 12px;
+      font-weight: 900;
+    }
     .intent-card {
       padding: 16px;
       border-radius: 22px;
@@ -282,6 +320,7 @@ const consoleHTML = `<!doctype html>
       .panel { min-height: auto; border-radius: 24px; }
       textarea { min-height: 430px; }
       .result-grid { grid-template-columns: 1fr; }
+      .task-row { grid-template-columns: 1fr 1fr; }
     }
   </style>
 </head>
@@ -434,10 +473,18 @@ const consoleHTML = `<!doctype html>
       <section class="panel">
         <div class="panel-head">
           <h2 class="panel-title">平台视图预览</h2>
-          <div class="label" id="last-action">待操作</div>
+          <div class="actions">
+            <button class="ghost" id="refresh-tasks">刷新任务</button>
+            <div class="label" id="last-action">待操作</div>
+          </div>
         </div>
         <div class="results">
           <div class="result-grid" id="cards"></div>
+          <div class="label">任务列表</div>
+          <div id="task-list" class="task-list">
+            <div class="empty">点击“刷新任务”，查看当前命名空间下的 AIService / AIJob。</div>
+          </div>
+          <div class="label">任务状态详情</div>
           <div id="output" class="empty">点击“校验”或“归一化”，查看治理意图 governanceIntent 与工作负载意图 workloadIntent 的解析结果。</div>
         </div>
       </section>
@@ -507,6 +554,7 @@ const consoleHTML = `<!doctype html>
     var yaml = document.getElementById("yaml");
     var output = document.getElementById("output");
     var cards = document.getElementById("cards");
+    var taskList = document.getElementById("task-list");
     var lastAction = document.getElementById("last-action");
     var fields = {};
     ["kind", "name", "namespace", "component", "tenant", "project", "environment", "owner", "runtime", "image", "modelName", "modelVersion", "modelURI", "replicas", "port", "jobKind", "ttl", "datasetURI", "outputURI"].forEach(function(id) {
@@ -649,6 +697,16 @@ const consoleHTML = `<!doctype html>
       cards.appendChild(card("运行时", data.runtime, ""));
       cards.appendChild(card("镜像", data.image, ""));
     }
+    function fetchJSON(path) {
+      return fetch(path).then(function(res) {
+        return res.json().then(function(data) {
+          if (!res.ok) {
+            throw new Error(data.error || ("HTTP " + res.status));
+          }
+          return data;
+        });
+      });
+    }
     function post(path) {
       lastAction.textContent = "处理中";
       generateYAML();
@@ -668,6 +726,54 @@ const consoleHTML = `<!doctype html>
     function deploy() {
       var dryRun = document.getElementById("dry-run").checked;
       return post("/api/v1/ai/applications?dryRun=" + dryRun);
+    }
+    function renderTasks(items) {
+      taskList.innerHTML = "";
+      if (!items || !items.length) {
+        var empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "当前命名空间暂无 AIService / AIJob。";
+        taskList.appendChild(empty);
+        return;
+      }
+      items.forEach(function(item) {
+        var row = document.createElement("button");
+        row.className = "task-row";
+        row.innerHTML = [
+          "<strong>" + item.namespace + "/" + item.name + "</strong>",
+          "<span>" + ((item.workloadTypes || []).join(",") || "-") + "</span>",
+          "<span>" + (item.aiMetadata && item.aiMetadata["ai.oam.dev/tenant"] || "-") + "</span>",
+          "<span>" + (item.phase || "-") + "</span>",
+          "<span class=\"pill\">" + (item.healthy ? "健康" : "未就绪") + "</span>"
+        ].join("");
+        row.onclick = function() {
+          loadTaskDetail(item.namespace, item.name);
+        };
+        taskList.appendChild(row);
+      });
+    }
+    function refreshTasks() {
+      lastAction.textContent = "刷新任务中";
+      var ns = encodeURIComponent(fields.namespace.value || "");
+      return fetchJSON("/api/v1/ai/applications?namespace=" + ns).then(function(data) {
+        renderTasks(data.items || []);
+        lastAction.textContent = "任务列表已刷新";
+      }).catch(function(err) {
+        setError(err.message);
+      });
+    }
+    function loadTaskDetail(namespace, name) {
+      lastAction.textContent = "读取任务详情";
+      return fetchJSON("/api/v1/ai/applications/" + encodeURIComponent(namespace) + "/" + encodeURIComponent(name) + "/status").then(function(data) {
+        cards.innerHTML = "";
+        cards.appendChild(card("任务", data.namespace + "/" + data.name, "ok"));
+        cards.appendChild(card("状态", data.phase || "-", data.healthy ? "ok" : "warn"));
+        cards.appendChild(card("健康", data.healthy ? "健康" : "未就绪", data.healthy ? "ok" : "warn"));
+        cards.appendChild(card("组件数", data.components ? data.components.length : 0, ""));
+        setJSON(data, "任务详情已更新");
+      }).catch(function(err) {
+        setError(err.message);
+      });
     }
     document.getElementById("load-service").onclick = function() {
       fillServiceForm();
@@ -710,10 +816,14 @@ const consoleHTML = `<!doctype html>
         cards.appendChild(card("部署结果", data.application && data.application.dryRun ? "DryRun 通过" : "已提交", "ok"));
         cards.appendChild(card("Application", data.application && ((data.application.namespace || "default") + "/" + data.application.name), "ok"));
         setJSON(data, data.application && data.application.dryRun ? "已 DryRun" : "已提交部署");
+        if (data.application && !data.application.dryRun) {
+          refreshTasks();
+        }
       }).catch(function(err) {
         setError(err.message);
       });
     };
+    document.getElementById("refresh-tasks").onclick = refreshTasks;
     fetch("/healthz").then(function(res) {
       return res.text();
     }).then(function(text) {

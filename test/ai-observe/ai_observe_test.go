@@ -1,6 +1,7 @@
 package aiobserve
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -10,6 +11,9 @@ import (
 
 	"github.com/oam-dev/kubevela/pkg/ai/observe"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"sigs.k8s.io/yaml"
 )
 
@@ -213,6 +217,68 @@ func TestStatusCommandFromFiles(t *testing.T) {
 	}
 }
 
+func TestClientListsOnlyAIApplications(t *testing.T) {
+	client := newObserveFakeClient(
+		mustObject(t, aiServiceListApplicationYAML),
+		mustObject(t, nonAIApplicationYAML),
+	)
+	reader := observe.NewClient(client)
+
+	items, err := reader.ListApplications(context.Background(), "sock-shop")
+	if err != nil {
+		t.Fatalf("ListApplications returned error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 AI application, got %#v", items)
+	}
+	item := items[0]
+	if item.Name != "ai-service-domain-demo" || item.Namespace != "sock-shop" {
+		t.Fatalf("unexpected item identity: %#v", item)
+	}
+	if item.Phase != "running" || !item.Healthy || item.Message != "Ready:1/1" {
+		t.Fatalf("unexpected item status: %#v", item)
+	}
+	if len(item.WorkloadTypes) != 1 || item.WorkloadTypes[0] != "service" {
+		t.Fatalf("unexpected workload types: %#v", item.WorkloadTypes)
+	}
+	if item.AIMetadata["ai.oam.dev/tenant"] != "demo-tenant" {
+		t.Fatalf("expected tenant metadata, got %#v", item.AIMetadata)
+	}
+}
+
+func TestClientSummarizesApplicationWithDynamicClient(t *testing.T) {
+	client := newObserveFakeClient(
+		mustObject(t, aiServiceApplicationYAML),
+		mustObject(t, deploymentYAML),
+		mustObject(t, serviceYAML),
+		mustObject(t, servicePodYAML),
+	)
+	reader := observe.NewClient(client)
+
+	summary, err := reader.SummarizeApplication(context.Background(), "sock-shop", "ai-service-domain-demo")
+	if err != nil {
+		t.Fatalf("SummarizeApplication returned error: %v", err)
+	}
+	if summary.Name != "ai-service-domain-demo" || summary.Components[0].Workload.ReadyReplicas != 1 {
+		t.Fatalf("unexpected summary: %#v", summary)
+	}
+}
+
+func newObserveFakeClient(objects ...*unstructured.Unstructured) *dynamicfake.FakeDynamicClient {
+	runtimeObjects := make([]runtime.Object, 0, len(objects))
+	for _, object := range objects {
+		runtimeObjects = append(runtimeObjects, object)
+	}
+	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		{Group: "core.oam.dev", Version: "v1beta1", Resource: "applications"}: "ApplicationList",
+		{Group: "apps", Version: "v1", Resource: "deployments"}:               "DeploymentList",
+		{Group: "batch", Version: "v1", Resource: "jobs"}:                     "JobList",
+		{Group: "", Version: "v1", Resource: "services"}:                      "ServiceList",
+		{Group: "", Version: "v1", Resource: "pods"}:                          "PodList",
+		{Group: "", Version: "v1", Resource: "events"}:                        "EventList",
+	}, runtimeObjects...)
+}
+
 func mustObject(t *testing.T, content string) *unstructured.Unstructured {
 	t.Helper()
 	obj := &unstructured.Unstructured{}
@@ -248,6 +314,42 @@ func projectRoot(t *testing.T) string {
 		wd = parent
 	}
 }
+
+const aiServiceListApplicationYAML = `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: ai-service-domain-demo
+  namespace: sock-shop
+  labels:
+    ai.oam.dev/tenant: demo-tenant
+spec:
+  components:
+  - name: sentiment-domain-api
+    type: ai-service
+status:
+  status: running
+  services:
+  - healthy: true
+    message: Ready:1/1
+    name: sentiment-domain-api
+    workloadDefinition:
+      kind: Deployment
+`
+
+const nonAIApplicationYAML = `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: web-demo
+  namespace: sock-shop
+spec:
+  components:
+  - name: web
+    type: webservice
+status:
+  status: running
+`
 
 const aiServiceApplicationYAML = `
 apiVersion: core.oam.dev/v1beta1

@@ -8,6 +8,7 @@ import (
 
 	domainapply "github.com/oam-dev/kubevela/pkg/ai/domain/apply"
 	"github.com/oam-dev/kubevela/pkg/ai/northbound"
+	"github.com/oam-dev/kubevela/pkg/ai/observe"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -65,7 +66,11 @@ func buildServerOptions(parsed args) (northbound.Options, error) {
 	if err != nil {
 		return northbound.Options{}, fmt.Errorf("create dynamic client: %w", err)
 	}
-	return northbound.Options{Applier: domainapply.DynamicApplicationApplier{Client: client}}, nil
+	reader := observe.NewClient(client)
+	return northbound.Options{
+		Applier: domainapply.DynamicApplicationApplier{Client: client},
+		Reader:  reader,
+	}, nil
 }
 
 func loadRestConfig(kubeconfig string) (*rest.Config, error) {

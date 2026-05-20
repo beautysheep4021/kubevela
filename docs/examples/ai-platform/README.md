@@ -63,7 +63,7 @@ When the process can load an in-cluster config, the default kubeconfig, or an ex
 ai-northbound --addr 0.0.0.0:18088 --kubeconfig /root/.kube/config
 ```
 
-If no kubeconfig is available, the server still starts for frontend, validation, and normalization checks, but `POST /api/v1/ai/applications` returns `503` because deployment is not configured.
+If no kubeconfig is available, the server still starts for frontend, validation, and normalization checks, but `POST /api/v1/ai/applications` and the readonly task APIs return `503` because Kubernetes access is not configured.
 
 Open the minimal frontend PoC:
 
@@ -73,6 +73,8 @@ http://127.0.0.1:8088/
 
 The page provides a form-first user workspace for `AIService` and `AIJob` intent submission. It generates domain YAML from form fields, keeps the YAML visible for review, and exposes validate, normalize, and deploy actions. The deploy action posts the same domain YAML to the northbound API, translates it into a native KubeVela `Application`, and applies it through Kubernetes server-side apply.
 
+The same page also provides a minimal task list and task status detail view. `刷新任务` reads the current namespace from the form and lists KubeVela `Application` objects whose components are `ai-service` or `ai-job`. Clicking a task fetches its readonly status summary, including Application phase, health, components, workload, Service, Pod, and diagnostic event data when available.
+
 The frontend keeps `服务端 DryRun` checked by default. With DryRun enabled, Kubernetes validates the generated `Application` without creating or updating it. To perform a real deployment, uncheck DryRun and click `提交部署`.
 
 Available endpoints:
@@ -80,6 +82,9 @@ Available endpoints:
 - `GET /healthz` returns `ok`.
 - `POST /api/v1/ai/validate` accepts an `AIService` or `AIJob` YAML document and returns validation JSON.
 - `POST /api/v1/ai/normalize` accepts the same YAML document and returns the normalized identity, governance intent, and workload intent JSON.
+- `GET /api/v1/ai/applications?namespace=sock-shop` lists AI applications in one namespace. Omit `namespace` to list across all namespaces when the configured kubeconfig has permission.
+- `GET /api/v1/ai/applications/{namespace}/{name}` returns the same readonly status summary as the status endpoint.
+- `GET /api/v1/ai/applications/{namespace}/{name}/status` reads one AI application and related Kubernetes resources and returns an observe summary.
 - `POST /api/v1/ai/applications?dryRun=true` accepts the same YAML document, translates it to a native KubeVela `Application`, and applies it with Kubernetes server-side dry-run.
 - `POST /api/v1/ai/applications` performs the same translation and applies the `Application` for real when deployment is configured.
 
@@ -102,6 +107,18 @@ Real deployment example:
 ```bash
 curl -sS --data-binary @docs/examples/ai-platform/domain/ai-service.yaml \
   http://127.0.0.1:8088/api/v1/ai/applications
+```
+
+Task list example:
+
+```bash
+curl -sS 'http://127.0.0.1:8088/api/v1/ai/applications?namespace=sock-shop'
+```
+
+Task status example:
+
+```bash
+curl -sS http://127.0.0.1:8088/api/v1/ai/applications/sock-shop/ai-service-northbound-demo/status
 ```
 
 This layer is intentionally narrow with respect to Kubernetes. It can create or update the generated KubeVela `Application`, but it still does not store platform state, reconcile workloads itself, or bypass KubeVela's native control plane.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/oam-dev/kubevela/pkg/ai/domain"
 	domainapply "github.com/oam-dev/kubevela/pkg/ai/domain/apply"
+	"github.com/oam-dev/kubevela/pkg/ai/observe"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -57,12 +59,87 @@ func TestServerServesConsolePage(t *testing.T) {
 		"/api/v1/ai/validate",
 		"/api/v1/ai/normalize",
 		"/api/v1/ai/applications",
+		"任务列表",
+		"刷新任务",
 		"governanceIntent",
 		"workloadIntent",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("console page missing %q", expected)
 		}
+	}
+}
+
+func TestServerListsApplications(t *testing.T) {
+	reader := &recordingApplicationReader{
+		items: []observe.ApplicationListItem{
+			{
+				Name:          "ai-service-northbound-demo",
+				Namespace:     "sock-shop",
+				Phase:         "running",
+				Healthy:       true,
+				Message:       "Ready:1/1",
+				WorkloadTypes: []string{"service"},
+				AIMetadata: map[string]string{
+					"ai.oam.dev/tenant": "demo-tenant",
+				},
+			},
+		},
+	}
+	server := NewServerWithOptions(Options{Reader: reader})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/applications?namespace=sock-shop", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload ApplicationsResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if reader.listNamespace != "sock-shop" {
+		t.Fatalf("namespace = %q, want sock-shop", reader.listNamespace)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].Name != "ai-service-northbound-demo" || payload.Items[0].WorkloadTypes[0] != "service" {
+		t.Fatalf("unexpected application list: %#v", payload)
+	}
+}
+
+func TestServerReturnsApplicationStatus(t *testing.T) {
+	reader := &recordingApplicationReader{
+		summaries: map[string]*observe.Summary{
+			"sock-shop/ai-service-northbound-demo": {
+				Name:      "ai-service-northbound-demo",
+				Namespace: "sock-shop",
+				Phase:     "running",
+				Healthy:   true,
+				Message:   "Ready:1/1",
+			},
+		},
+	}
+	server := NewServerWithOptions(Options{Reader: reader})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/applications/sock-shop/ai-service-northbound-demo/status", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var summary observe.Summary
+	if err := json.Unmarshal(recorder.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if summary.Name != "ai-service-northbound-demo" || summary.Namespace != "sock-shop" || !summary.Healthy {
+		t.Fatalf("unexpected summary: %#v", summary)
+	}
+}
+
+func TestServerListReturnsUnavailableWhenReaderIsNotConfigured(t *testing.T) {
+	server := NewServer()
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/applications", nil))
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
 	}
 }
 
@@ -238,3 +315,23 @@ func (a *recordingApplicationApplier) ApplyApplication(_ context.Context, namesp
 }
 
 var _ domainapply.ApplicationApplier = (*recordingApplicationApplier)(nil)
+
+type recordingApplicationReader struct {
+	items         []observe.ApplicationListItem
+	summaries     map[string]*observe.Summary
+	listNamespace string
+}
+
+func (r *recordingApplicationReader) ListApplications(_ context.Context, namespace string) ([]observe.ApplicationListItem, error) {
+	r.listNamespace = namespace
+	return r.items, nil
+}
+
+func (r *recordingApplicationReader) SummarizeApplication(_ context.Context, namespace, name string) (*observe.Summary, error) {
+	key := namespace + "/" + name
+	summary := r.summaries[key]
+	if summary == nil {
+		return nil, fmt.Errorf("not found")
+	}
+	return summary, nil
+}
