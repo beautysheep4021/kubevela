@@ -321,12 +321,16 @@ kind: Application
 metadata:
   name: ai-service-domain-demo
   namespace: sock-shop
-  labels:
-    ai.oam.dev/tenant: demo-tenant
 spec:
   components:
   - name: sentiment-domain-api
     type: ai-service
+    traits:
+    - type: ai-runtime
+      properties:
+        tenant: demo-tenant
+        project: sentiment
+        environment: poc
 status:
   status: running
   services:

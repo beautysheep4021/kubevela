@@ -146,6 +146,7 @@ func applicationListItem(app *unstructured.Unstructured) (ApplicationListItem, b
 		AIMetadata:    map[string]string{},
 	}
 	mergeAIMetadata(item.AIMetadata, app)
+	mergeRuntimeTraitMetadata(item.AIMetadata, app)
 	services, _, _ := unstructured.NestedSlice(app.Object, "status", "services")
 	for _, service := range services {
 		serviceMap, ok := service.(map[string]interface{})
@@ -160,6 +161,43 @@ func applicationListItem(app *unstructured.Unstructured) (ApplicationListItem, b
 		}
 	}
 	return item, true
+}
+
+func mergeRuntimeTraitMetadata(target map[string]string, app *unstructured.Unstructured) {
+	rawComponents, _, _ := unstructured.NestedSlice(app.Object, "spec", "components")
+	for _, rawComponent := range rawComponents {
+		component, ok := rawComponent.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		rawTraits, _, _ := unstructured.NestedSlice(component, "traits")
+		for _, rawTrait := range rawTraits {
+			trait, ok := rawTrait.(map[string]interface{})
+			if !ok || stringFromMap(trait, "type") != "ai-runtime" {
+				continue
+			}
+			properties, ok := nestedMap(trait, "properties")
+			if !ok {
+				continue
+			}
+			for _, key := range []string{"runtime", "framework", "tenant", "project", "environment", "owner", "modelURI", "datasetURI"} {
+				if value := stringFromMap(properties, key); value != "" {
+					target[aiMetadataPrefix+metadataKey(key)] = value
+				}
+			}
+		}
+	}
+}
+
+func metadataKey(key string) string {
+	switch key {
+	case "modelURI":
+		return "model-uri"
+	case "datasetURI":
+		return "dataset-uri"
+	default:
+		return key
+	}
 }
 
 func applicationComponents(app *unstructured.Unstructured) ([]ComponentRef, []string) {
