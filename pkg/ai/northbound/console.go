@@ -82,6 +82,27 @@ const consoleHTML = `<!doctype html>
       padding: 18px;
       border-radius: 24px;
     }
+    .tabs {
+      display: inline-flex;
+      gap: 8px;
+      padding: 7px;
+      margin: 22px 0 0;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,.48);
+      box-shadow: 0 14px 38px rgba(29,37,34,.1);
+    }
+    .tab {
+      color: var(--ink);
+      background: transparent;
+      border: 1px solid transparent;
+    }
+    .tab.active {
+      color: #fffaf0;
+      background: var(--ink);
+    }
+    .view { display: none; }
+    .view.active { display: block; }
     .label {
       color: var(--muted);
       font-size: 12px;
@@ -96,6 +117,11 @@ const consoleHTML = `<!doctype html>
     .workspace {
       display: grid;
       grid-template-columns: minmax(420px, .9fr) minmax(480px, 1.1fr);
+      gap: 20px;
+    }
+    .monitor-grid {
+      display: grid;
+      grid-template-columns: minmax(340px, .58fr) minmax(520px, 1fr);
       gap: 20px;
     }
     .panel {
@@ -135,6 +161,12 @@ const consoleHTML = `<!doctype html>
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 14px;
       padding: 20px 22px 8px;
+    }
+    .filter-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      padding: 20px 22px;
     }
     .field {
       display: grid;
@@ -231,6 +263,7 @@ const consoleHTML = `<!doctype html>
       gap: 10px;
       margin: 18px 0;
     }
+    .task-list.flush { margin: 0; }
     .task-row {
       width: 100%;
       display: grid;
@@ -315,8 +348,9 @@ const consoleHTML = `<!doctype html>
     @media (max-width: 980px) {
       main { width: min(100vw - 20px, 760px); padding-top: 18px; }
       .hero, .workspace { grid-template-columns: 1fr; }
+      .monitor-grid { grid-template-columns: 1fr; }
       .status-strip { grid-template-columns: 1fr; }
-      .form-grid { grid-template-columns: 1fr; }
+      .form-grid, .filter-grid { grid-template-columns: 1fr; }
       .panel { min-height: auto; border-radius: 24px; }
       textarea { min-height: 430px; }
       .result-grid { grid-template-columns: 1fr; }
@@ -330,7 +364,11 @@ const consoleHTML = `<!doctype html>
       <div>
         <div class="label">智算纳管 · 使用方工作台 PoC</div>
         <h1>使用方工作台</h1>
-        <p class="lede">面向业务用户的提交意图入口。用户先通过表单描述模型服务或批任务，页面生成领域 YAML，并调用北向 API 完成校验、语义归一化和提交部署。</p>
+        <p class="lede">面向业务用户和平台监测方的同页 PoC。使用方提交模型服务或批任务，监测方查看全局任务概览、筛选条件和异常任务。</p>
+        <div class="tabs">
+          <button class="tab active" id="user-tab">使用方工作台</button>
+          <button class="tab" id="monitor-tab">监测方工作台</button>
+        </div>
       </div>
       <div class="status-strip">
         <div class="status-card">
@@ -348,6 +386,7 @@ const consoleHTML = `<!doctype html>
       </div>
     </section>
 
+    <section class="view active" id="user-view">
     <section class="workspace">
       <section class="panel">
         <div class="panel-head">
@@ -489,6 +528,80 @@ const consoleHTML = `<!doctype html>
         </div>
       </section>
     </section>
+    </section>
+
+    <section class="view" id="monitor-view">
+      <section class="monitor-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <h2 class="panel-title">全局任务概览</h2>
+            <button id="monitor-refresh">刷新监测</button>
+          </div>
+          <div class="results">
+            <div class="result-grid" id="monitor-cards">
+              <div class="intent-card ok"><div class="label">AIService 数量</div><strong>0</strong></div>
+              <div class="intent-card ok"><div class="label">AIJob 数量</div><strong>0</strong></div>
+              <div class="intent-card"><div class="label">Running</div><strong>0</strong></div>
+              <div class="intent-card warn"><div class="label">异常任务</div><strong>0</strong></div>
+            </div>
+          </div>
+          <div class="subhead" style="margin:0 22px;">筛选条件</div>
+          <div class="filter-grid">
+            <div class="field">
+              <label for="monitorNamespace">命名空间</label>
+              <input id="monitorNamespace" value="sock-shop" placeholder="留空表示全部">
+            </div>
+            <div class="field">
+              <label for="monitorType">任务类型</label>
+              <select id="monitorType">
+                <option value="">全部</option>
+                <option value="service">AIService</option>
+                <option value="job">AIJob</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="monitorTenant">租户</label>
+              <input id="monitorTenant" placeholder="tenant">
+            </div>
+            <div class="field">
+              <label for="monitorProject">项目</label>
+              <input id="monitorProject" placeholder="project">
+            </div>
+            <div class="field">
+              <label for="monitorEnvironment">环境</label>
+              <input id="monitorEnvironment" placeholder="environment">
+            </div>
+            <div class="field">
+              <label for="monitorHealth">健康状态</label>
+              <select id="monitorHealth">
+                <option value="">全部</option>
+                <option value="healthy">健康</option>
+                <option value="unhealthy">未就绪</option>
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2 class="panel-title">监测任务列表</h2>
+            <div class="label" id="monitor-action">待刷新</div>
+          </div>
+          <div class="results">
+            <div class="label">任务列表</div>
+            <div id="monitor-task-list" class="task-list flush">
+              <div class="empty">点击“刷新监测”，查看平台任务。</div>
+            </div>
+            <div class="label">异常任务</div>
+            <div id="monitor-alert-list" class="task-list">
+              <div class="empty">暂无异常任务。</div>
+            </div>
+            <div class="label">任务状态详情</div>
+            <div id="monitor-output" class="empty">点击监测任务，查看单任务状态详情。</div>
+          </div>
+        </section>
+      </section>
+    </section>
   </main>
 
   <script>
@@ -556,6 +669,15 @@ const consoleHTML = `<!doctype html>
     var cards = document.getElementById("cards");
     var taskList = document.getElementById("task-list");
     var lastAction = document.getElementById("last-action");
+    var monitorCards = document.getElementById("monitor-cards");
+    var monitorTaskList = document.getElementById("monitor-task-list");
+    var monitorAlertList = document.getElementById("monitor-alert-list");
+    var monitorOutput = document.getElementById("monitor-output");
+    var monitorAction = document.getElementById("monitor-action");
+    var monitorFields = {};
+    ["monitorNamespace", "monitorType", "monitorTenant", "monitorProject", "monitorEnvironment", "monitorHealth"].forEach(function(id) {
+      monitorFields[id] = document.getElementById(id);
+    });
     var fields = {};
     ["kind", "name", "namespace", "component", "tenant", "project", "environment", "owner", "runtime", "image", "modelName", "modelVersion", "modelURI", "replicas", "port", "jobKind", "ttl", "datasetURI", "outputURI"].forEach(function(id) {
       fields[id] = document.getElementById(id);
@@ -682,11 +804,26 @@ const consoleHTML = `<!doctype html>
       output.textContent = message;
       lastAction.textContent = "错误";
     }
+    function setMonitorError(message) {
+      monitorOutput.className = "empty";
+      monitorOutput.textContent = message;
+      monitorAction.textContent = "错误";
+    }
     function card(label, value, mode) {
       var node = document.createElement("div");
       node.className = "intent-card " + (mode || "");
       node.innerHTML = "<div class=\"label\">" + label + "</div><strong>" + (value || "-") + "</strong>";
       return node;
+    }
+    function setActiveView(name) {
+      var userActive = name === "user";
+      document.getElementById("user-view").className = userActive ? "view active" : "view";
+      document.getElementById("monitor-view").className = userActive ? "view" : "view active";
+      document.getElementById("user-tab").className = userActive ? "tab active" : "tab";
+      document.getElementById("monitor-tab").className = userActive ? "tab" : "tab active";
+      if (!userActive) {
+        refreshMonitor();
+      }
     }
     function renderCards(data) {
       cards.innerHTML = "";
@@ -750,6 +887,101 @@ const consoleHTML = `<!doctype html>
           loadTaskDetail(item.namespace, item.name);
         };
         taskList.appendChild(row);
+      });
+    }
+    function metadata(item, key) {
+      return item.aiMetadata && (item.aiMetadata["ai.oam.dev/" + key] || item.aiMetadata[key]) || "";
+    }
+    function matchesMonitorFilters(item) {
+      var workloadTypes = item.workloadTypes || [];
+      var type = monitorFields.monitorType.value;
+      if (type && workloadTypes.indexOf(type) === -1) {
+        return false;
+      }
+      if (monitorFields.monitorTenant.value && metadata(item, "tenant") !== monitorFields.monitorTenant.value) {
+        return false;
+      }
+      if (monitorFields.monitorProject.value && metadata(item, "project") !== monitorFields.monitorProject.value) {
+        return false;
+      }
+      if (monitorFields.monitorEnvironment.value && metadata(item, "environment") !== monitorFields.monitorEnvironment.value) {
+        return false;
+      }
+      if (monitorFields.monitorHealth.value === "healthy" && !item.healthy) {
+        return false;
+      }
+      if (monitorFields.monitorHealth.value === "unhealthy" && item.healthy) {
+        return false;
+      }
+      return true;
+    }
+    function renderMonitorCards(items) {
+      var serviceCount = 0;
+      var jobCount = 0;
+      var runningCount = 0;
+      var unhealthyCount = 0;
+      items.forEach(function(item) {
+        var types = item.workloadTypes || [];
+        if (types.indexOf("service") !== -1) serviceCount++;
+        if (types.indexOf("job") !== -1) jobCount++;
+        if (item.phase === "running") runningCount++;
+        if (!item.healthy) unhealthyCount++;
+      });
+      monitorCards.innerHTML = "";
+      monitorCards.appendChild(card("AIService 数量", serviceCount, "ok"));
+      monitorCards.appendChild(card("AIJob 数量", jobCount, "ok"));
+      monitorCards.appendChild(card("Running", runningCount, ""));
+      monitorCards.appendChild(card("异常任务", unhealthyCount, unhealthyCount ? "warn" : "ok"));
+    }
+    function renderTaskRows(container, items, emptyText) {
+      container.innerHTML = "";
+      if (!items.length) {
+        var empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = emptyText;
+        container.appendChild(empty);
+        return;
+      }
+      items.forEach(function(item) {
+        var row = document.createElement("button");
+        row.className = "task-row";
+        row.innerHTML = [
+          "<strong>" + item.namespace + "/" + item.name + "</strong>",
+          "<span>" + ((item.workloadTypes || []).join(",") || "-") + "</span>",
+          "<span>" + (metadata(item, "tenant") || "-") + "</span>",
+          "<span>" + (metadata(item, "environment") || item.phase || "-") + "</span>",
+          "<span class=\"pill\">" + (item.healthy ? "健康" : "未就绪") + "</span>"
+        ].join("");
+        row.onclick = function() {
+          loadMonitorDetail(item.namespace, item.name);
+        };
+        container.appendChild(row);
+      });
+    }
+    function refreshMonitor() {
+      monitorAction.textContent = "刷新监测中";
+      var ns = encodeURIComponent(monitorFields.monitorNamespace.value || "");
+      return fetchJSON("/api/v1/ai/applications?namespace=" + ns).then(function(data) {
+        var items = (data.items || []).filter(matchesMonitorFilters);
+        renderMonitorCards(items);
+        renderTaskRows(monitorTaskList, items, "当前筛选条件下暂无任务。");
+        renderTaskRows(monitorAlertList, items.filter(function(item) { return !item.healthy; }), "暂无异常任务。");
+        monitorAction.textContent = "监测视图已刷新";
+      }).catch(function(err) {
+        setMonitorError(err.message);
+      });
+    }
+    function loadMonitorDetail(namespace, name) {
+      monitorAction.textContent = "读取任务详情";
+      return fetchJSON("/api/v1/ai/applications/" + encodeURIComponent(namespace) + "/" + encodeURIComponent(name) + "/status").then(function(data) {
+        monitorOutput.className = "";
+        monitorOutput.innerHTML = "";
+        var pre = document.createElement("pre");
+        pre.textContent = JSON.stringify(data, null, 2);
+        monitorOutput.appendChild(pre);
+        monitorAction.textContent = "任务详情已更新";
+      }).catch(function(err) {
+        setMonitorError(err.message);
       });
     }
     function refreshTasks() {
@@ -824,6 +1056,12 @@ const consoleHTML = `<!doctype html>
       });
     };
     document.getElementById("refresh-tasks").onclick = refreshTasks;
+    document.getElementById("user-tab").onclick = function() { setActiveView("user"); };
+    document.getElementById("monitor-tab").onclick = function() { setActiveView("monitor"); };
+    document.getElementById("monitor-refresh").onclick = refreshMonitor;
+    Object.keys(monitorFields).forEach(function(id) {
+      monitorFields[id].addEventListener("change", refreshMonitor);
+    });
     fetch("/healthz").then(function(res) {
       return res.text();
     }).then(function(text) {

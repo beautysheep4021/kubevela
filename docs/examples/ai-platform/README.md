@@ -71,9 +71,12 @@ Open the minimal frontend PoC:
 http://127.0.0.1:8088/
 ```
 
-The page provides a form-first user workspace for `AIService` and `AIJob` intent submission. It generates domain YAML from form fields, keeps the YAML visible for review, and exposes validate, normalize, and deploy actions. The deploy action posts the same domain YAML to the northbound API, translates it into a native KubeVela `Application`, and applies it through Kubernetes server-side apply.
+The page keeps the first PoC as one frontend with two tabs instead of splitting user and monitoring surfaces into separate projects:
 
-The same page also provides a minimal task list and task status detail view. `刷新任务` reads the current namespace from the form and lists KubeVela `Application` objects whose components are `ai-service` or `ai-job`. Clicking a task fetches its readonly status summary, including Application phase, health, components, workload, Service, Pod, and diagnostic event data when available.
+- `使用方工作台` provides a form-first workspace for `AIService` and `AIJob` intent submission. It generates domain YAML from form fields, keeps the YAML visible for review, and exposes validate, normalize, and deploy actions. The deploy action posts the same domain YAML to the northbound API, translates it into a native KubeVela `Application`, and applies it through Kubernetes server-side apply.
+- `监测方工作台` provides a minimal readonly monitoring view over the same API. It shows global task counts, `AIService` and `AIJob` counts, running count, unhealthy task count, namespace/type/tenant/project/environment/health filters, the filtered task list, an unhealthy task list, and a single-task status detail panel.
+
+The user workspace task list uses `刷新任务` to read the current namespace from the form and list KubeVela `Application` objects whose components are `ai-service` or `ai-job`. Clicking a task fetches its readonly status summary, including Application phase, health, components, workload, Service, Pod, and diagnostic event data when available.
 
 The frontend keeps `服务端 DryRun` checked by default. With DryRun enabled, Kubernetes validates the generated `Application` without creating or updating it. To perform a real deployment, uncheck DryRun and click `提交部署`.
 
