@@ -11,6 +11,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/ai/observe"
 
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -66,7 +67,11 @@ func buildServerOptions(parsed args) (northbound.Options, error) {
 	if err != nil {
 		return northbound.Options{}, fmt.Errorf("create dynamic client: %w", err)
 	}
-	reader := observe.NewClient(client)
+	kubeClient, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return northbound.Options{}, fmt.Errorf("create kubernetes client: %w", err)
+	}
+	reader := observe.NewClientWithKube(client, kubeClient)
 	return northbound.Options{
 		Applier: domainapply.DynamicApplicationApplier{Client: client},
 		Reader:  reader,

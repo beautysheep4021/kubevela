@@ -29,6 +29,7 @@ type errorResponse struct {
 type ApplicationReader interface {
 	ListApplications(ctx context.Context, namespace string) ([]observe.ApplicationListItem, error)
 	SummarizeApplication(ctx context.Context, namespace, name string) (*observe.Summary, error)
+	GetApplicationLogs(ctx context.Context, options observe.LogOptions) (*observe.Logs, error)
 }
 
 type DeployResponse struct {
@@ -154,9 +155,24 @@ func applicationDetail(reader ApplicationReader) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "application reader is not configured")
 			return
 		}
-		namespace, name, ok := parseApplicationDetailPath(r.URL.Path)
+		namespace, name, action, ok := parseApplicationDetailPath(r.URL.Path)
 		if !ok {
 			http.NotFound(w, r)
+			return
+		}
+		if action == "logs" {
+			logs, err := reader.GetApplicationLogs(r.Context(), observe.LogOptions{
+				Namespace: namespace,
+				Name:      name,
+				Pod:       r.URL.Query().Get("pod"),
+				Container: r.URL.Query().Get("container"),
+				TailLines: parseTailLines(r),
+			})
+			if err != nil {
+				writeError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, logs)
 			return
 		}
 		summary, err := reader.SummarizeApplication(r.Context(), namespace, name)
@@ -168,24 +184,26 @@ func applicationDetail(reader ApplicationReader) http.HandlerFunc {
 	}
 }
 
-func parseApplicationDetailPath(path string) (string, string, bool) {
+func parseApplicationDetailPath(path string) (string, string, string, bool) {
 	rest := strings.TrimPrefix(path, "/api/v1/ai/applications/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
-	if len(parts) == 3 && parts[2] == "status" {
+	action := ""
+	if len(parts) == 3 && (parts[2] == "status" || parts[2] == "logs") {
+		action = parts[2]
 		parts = parts[:2]
 	}
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	namespace, err := url.PathUnescape(parts[0])
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	name, err := url.PathUnescape(parts[1])
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
-	return namespace, name, true
+	return namespace, name, action, true
 }
 
 func deploy(applier domainapply.ApplicationApplier) http.HandlerFunc {
@@ -235,6 +253,21 @@ func parseDryRun(r *http.Request) bool {
 	value, err := strconv.ParseBool(raw)
 	if err != nil {
 		return false
+	}
+	return value
+}
+
+func parseTailLines(r *http.Request) int64 {
+	raw := r.URL.Query().Get("tailLines")
+	if raw == "" {
+		return 200
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		return 200
+	}
+	if value > 2000 {
+		return 2000
 	}
 	return value
 }

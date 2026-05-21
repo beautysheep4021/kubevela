@@ -63,6 +63,30 @@ type PodSummary struct {
 	Events          []EventSummary     `json:"events,omitempty"`
 }
 
+type LogOptions struct {
+	Namespace string
+	Name      string
+	Pod       string
+	Container string
+	TailLines int64
+}
+
+type Logs struct {
+	Namespace   string   `json:"namespace,omitempty"`
+	Application string   `json:"application"`
+	Pod         string   `json:"pod,omitempty"`
+	Container   string   `json:"container,omitempty"`
+	TailLines   int64    `json:"tailLines,omitempty"`
+	Logs        string   `json:"logs"`
+	Pods        []LogPod `json:"pods,omitempty"`
+}
+
+type LogPod struct {
+	Name       string   `json:"name"`
+	Phase      string   `json:"phase,omitempty"`
+	Containers []string `json:"containers,omitempty"`
+}
+
 type ContainerSummary struct {
 	Name         string `json:"name"`
 	Ready        bool   `json:"ready"`

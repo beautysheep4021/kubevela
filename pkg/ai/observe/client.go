@@ -3,12 +3,15 @@ package observe
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -24,6 +27,7 @@ var (
 
 type Client struct {
 	Dynamic dynamic.Interface
+	Kube    kubernetes.Interface
 }
 
 type ApplicationListItem struct {
@@ -46,6 +50,10 @@ type ComponentRef struct {
 
 func NewClient(client dynamic.Interface) Client {
 	return Client{Dynamic: client}
+}
+
+func NewClientWithKube(dynamicClient dynamic.Interface, kubeClient kubernetes.Interface) Client {
+	return Client{Dynamic: dynamicClient, Kube: kubeClient}
 }
 
 // SummarizeApplication reads a KubeVela Application and related native resources using GET/LIST only.
@@ -132,6 +140,80 @@ func (c Client) SummarizeApplication(ctx context.Context, namespace, name string
 	return SummarizeObjects(objects)
 }
 
+func (c Client) GetApplicationLogs(ctx context.Context, options LogOptions) (*Logs, error) {
+	if c.Dynamic == nil {
+		return nil, fmt.Errorf("dynamic client is required")
+	}
+	if c.Kube == nil {
+		return nil, fmt.Errorf("kubernetes client is required for logs")
+	}
+	if options.Namespace == "" {
+		return nil, fmt.Errorf("namespace is required")
+	}
+	if options.Name == "" {
+		return nil, fmt.Errorf("application name is required")
+	}
+	if options.TailLines <= 0 {
+		options.TailLines = 200
+	}
+	if options.TailLines > 2000 {
+		options.TailLines = 2000
+	}
+
+	pods, err := c.Dynamic.Resource(podGVR).Namespace(options.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.oam.dev/name=" + options.Name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list pods for Application %s/%s: %w", options.Namespace, options.Name, err)
+	}
+	if len(pods.Items) == 0 {
+		return nil, fmt.Errorf("no pods found for Application %s/%s", options.Namespace, options.Name)
+	}
+
+	logPods := make([]LogPod, 0, len(pods.Items))
+	for i := range pods.Items {
+		logPods = append(logPods, logPodFromUnstructured(&pods.Items[i]))
+	}
+	sort.Slice(logPods, func(i, j int) bool {
+		return logPods[i].Name < logPods[j].Name
+	})
+
+	selected := selectLogPod(pods.Items, options.Pod)
+	if selected == nil {
+		return nil, fmt.Errorf("pod %q was not found for Application %s/%s", options.Pod, options.Namespace, options.Name)
+	}
+	container := options.Container
+	if container == "" {
+		container = firstContainerName(selected)
+	}
+	if container == "" {
+		return nil, fmt.Errorf("pod %s has no containers", selected.GetName())
+	}
+
+	stream, err := c.Kube.CoreV1().Pods(options.Namespace).GetLogs(selected.GetName(), &corev1.PodLogOptions{
+		Container: container,
+		TailLines: &options.TailLines,
+	}).Stream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read logs for Pod %s/%s container %s: %w", options.Namespace, selected.GetName(), container, err)
+	}
+	defer stream.Close()
+	content, err := io.ReadAll(stream)
+	if err != nil {
+		return nil, fmt.Errorf("read log stream for Pod %s/%s container %s: %w", options.Namespace, selected.GetName(), container, err)
+	}
+
+	return &Logs{
+		Namespace:   options.Namespace,
+		Application: options.Name,
+		Pod:         selected.GetName(),
+		Container:   container,
+		TailLines:   options.TailLines,
+		Logs:        string(content),
+		Pods:        logPods,
+	}, nil
+}
+
 func applicationListItem(app *unstructured.Unstructured) (ApplicationListItem, bool) {
 	components, workloadTypes := applicationComponents(app)
 	if len(components) == 0 {
@@ -161,6 +243,61 @@ func applicationListItem(app *unstructured.Unstructured) (ApplicationListItem, b
 		}
 	}
 	return item, true
+}
+
+func logPodFromUnstructured(pod *unstructured.Unstructured) LogPod {
+	item := LogPod{
+		Name:  pod.GetName(),
+		Phase: nestedString(pod.Object, "status", "phase"),
+	}
+	containers, _, _ := unstructured.NestedSlice(pod.Object, "spec", "containers")
+	for _, raw := range containers {
+		container, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name := stringFromMap(container, "name"); name != "" {
+			item.Containers = append(item.Containers, name)
+		}
+	}
+	return item
+}
+
+func selectLogPod(pods []unstructured.Unstructured, podName string) *unstructured.Unstructured {
+	var selected *unstructured.Unstructured
+	for i := range pods {
+		pod := &pods[i]
+		if podName != "" {
+			if pod.GetName() == podName {
+				return pod
+			}
+			continue
+		}
+		if selected == nil {
+			selected = pod
+			continue
+		}
+		podCreatedAt := pod.GetCreationTimestamp().Time
+		selectedCreatedAt := selected.GetCreationTimestamp().Time
+		if podCreatedAt.After(selectedCreatedAt) || (podCreatedAt.Equal(selectedCreatedAt) && pod.GetName() > selected.GetName()) {
+			selected = pod
+		}
+	}
+	return selected
+}
+
+func firstContainerName(pod *unstructured.Unstructured) string {
+	containers, _, _ := unstructured.NestedSlice(pod.Object, "spec", "containers")
+	for _, raw := range containers {
+		container, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name := stringFromMap(container, "name"); name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 func mergeRuntimeTraitMetadata(target map[string]string, app *unstructured.Unstructured) {

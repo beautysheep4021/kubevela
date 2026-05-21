@@ -8,27 +8,28 @@ const consoleHTML = `<!doctype html>
   <title>智算纳管北向验证台</title>
   <style>
     :root {
-      --ink: #1d2522;
-      --muted: #61706b;
-      --paper: #fff8e8;
-      --line: rgba(29, 37, 34, .14);
-      --field: rgba(255, 255, 255, .72);
-      --moss: #375b4c;
-      --rust: #b75d35;
-      --gold: #d9a73e;
-      --blue: #2f5f74;
-      --shadow: 0 22px 80px rgba(29, 37, 34, .16);
+      --ink: #17202a;
+      --muted: #627084;
+      --paper: #f7f9fc;
+      --panel: rgba(255, 255, 255, .86);
+      --line: rgba(23, 32, 42, .12);
+      --field: rgba(248, 250, 252, .92);
+      --moss: #256b5f;
+      --rust: #b4493f;
+      --blue: #245b91;
+      --steel: #31465f;
+      --shadow: 0 18px 54px rgba(28, 39, 52, .12);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       min-height: 100vh;
       color: var(--ink);
-      font-family: "Noto Serif SC", "Songti SC", "STSong", "PingFang SC", serif;
+      font-family: "Avenir Next", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
       background:
-        radial-gradient(circle at top left, rgba(217, 167, 62, .42), transparent 32rem),
-        radial-gradient(circle at 86% 14%, rgba(47, 95, 116, .2), transparent 28rem),
-        linear-gradient(135deg, #f6ecd8 0%, #efe1c5 42%, #dbe8dd 100%);
+        radial-gradient(circle at 4% 0%, rgba(36, 91, 145, .16), transparent 30rem),
+        radial-gradient(circle at 86% 10%, rgba(37, 107, 95, .14), transparent 28rem),
+        linear-gradient(135deg, #f8fafc 0%, #edf3f8 48%, #e7edf3 100%);
     }
     body:before {
       content: "";
@@ -36,15 +37,15 @@ const consoleHTML = `<!doctype html>
       inset: 0;
       pointer-events: none;
       background-image:
-        linear-gradient(rgba(24, 33, 31, .04) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(24, 33, 31, .04) 1px, transparent 1px);
-      background-size: 34px 34px;
-      mask-image: linear-gradient(to bottom, rgba(0,0,0,.65), transparent);
+        linear-gradient(rgba(23, 32, 42, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23, 32, 42, .035) 1px, transparent 1px);
+      background-size: 28px 28px;
+      mask-image: linear-gradient(to bottom, rgba(0,0,0,.5), transparent);
     }
     main {
       width: min(1480px, calc(100vw - 32px));
       margin: 0 auto;
-      padding: 32px 0 48px;
+      padding: 24px 0 42px;
     }
     .hero {
       display: grid;
@@ -55,16 +56,15 @@ const consoleHTML = `<!doctype html>
     }
     h1 {
       margin: 0;
-      font-family: "Noto Serif SC", "Songti SC", Georgia, serif;
-      font-size: clamp(42px, 7vw, 92px);
-      line-height: .96;
-      letter-spacing: -0.08em;
+      font-size: clamp(30px, 5vw, 64px);
+      line-height: 1.02;
+      letter-spacing: -.055em;
     }
     .lede {
       max-width: 760px;
       margin: 18px 0 0;
       color: var(--muted);
-      font-size: 17px;
+      font-size: 14px;
       line-height: 1.55;
     }
     .status-strip {
@@ -74,23 +74,23 @@ const consoleHTML = `<!doctype html>
     }
     .status-card, .panel, .intent-card {
       border: 1px solid var(--line);
-      background: rgba(255, 250, 240, .74);
+      background: var(--panel);
       box-shadow: var(--shadow);
       backdrop-filter: blur(18px);
     }
     .status-card {
-      padding: 18px;
-      border-radius: 24px;
+      padding: 14px;
+      border-radius: 18px;
     }
     .tabs {
       display: inline-flex;
       gap: 8px;
-      padding: 7px;
-      margin: 22px 0 0;
+      padding: 5px;
+      margin: 18px 0 0;
       border: 1px solid var(--line);
       border-radius: 999px;
-      background: rgba(255,255,255,.48);
-      box-shadow: 0 14px 38px rgba(29,37,34,.1);
+      background: rgba(255,255,255,.66);
+      box-shadow: 0 10px 26px rgba(28,39,52,.08);
     }
     .tab {
       color: var(--ink);
@@ -99,19 +99,19 @@ const consoleHTML = `<!doctype html>
     }
     .tab.active {
       color: #fffaf0;
-      background: var(--ink);
+      background: var(--steel);
     }
     .view { display: none; }
     .view.active { display: block; }
     .label {
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 800;
       letter-spacing: .12em;
     }
     .metric {
       margin-top: 8px;
-      font-size: 26px;
+      font-size: 18px;
       font-weight: 900;
     }
     .workspace {
@@ -126,7 +126,7 @@ const consoleHTML = `<!doctype html>
     }
     .panel {
       min-height: 640px;
-      border-radius: 32px;
+      border-radius: 24px;
       overflow: hidden;
     }
     .panel-head {
@@ -134,12 +134,12 @@ const consoleHTML = `<!doctype html>
       justify-content: space-between;
       gap: 16px;
       align-items: center;
-      padding: 20px 22px;
+      padding: 16px 18px;
       border-bottom: 1px solid var(--line);
     }
     .panel-title {
       margin: 0;
-      font-size: 18px;
+      font-size: 16px;
       font-weight: 900;
     }
     .actions {
@@ -151,22 +151,22 @@ const consoleHTML = `<!doctype html>
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 0 22px 18px;
+      padding: 0 18px 14px;
       color: var(--muted);
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 900;
     }
     .form-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 14px;
-      padding: 20px 22px 8px;
+      padding: 16px 18px 6px;
     }
     .filter-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 14px;
-      padding: 20px 22px;
+      padding: 16px 18px;
     }
     .field {
       display: grid;
@@ -180,10 +180,10 @@ const consoleHTML = `<!doctype html>
     }
     input, select {
       width: 100%;
-      min-height: 42px;
+      min-height: 36px;
       border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 10px 12px;
+      border-radius: 12px;
+      padding: 8px 10px;
       color: var(--ink);
       background: rgba(255,255,255,.7);
       outline: none;
@@ -208,7 +208,7 @@ const consoleHTML = `<!doctype html>
       font-weight: 900;
     }
     .yaml-preview {
-      padding: 0 22px 22px;
+      padding: 0 18px 18px;
     }
     .yaml-preview .label {
       margin: 14px 0 8px;
@@ -217,9 +217,9 @@ const consoleHTML = `<!doctype html>
     button {
       border: 0;
       border-radius: 999px;
-      padding: 11px 16px;
+      padding: 9px 13px;
       color: #fffaf0;
-      background: var(--ink);
+      background: var(--steel);
       font-weight: 900;
       letter-spacing: .01em;
       cursor: pointer;
@@ -227,30 +227,30 @@ const consoleHTML = `<!doctype html>
     }
     button:hover {
       transform: translateY(-2px);
-      box-shadow: 0 10px 22px rgba(24, 33, 31, .22);
+      box-shadow: 0 8px 18px rgba(28, 39, 52, .16);
     }
     button.secondary { background: var(--moss); }
     button.ghost {
       color: var(--ink);
-      background: rgba(255,255,255,.62);
+      background: rgba(255,255,255,.74);
       border: 1px solid var(--line);
     }
     textarea {
       width: 100%;
-      min-height: 268px;
+      min-height: 248px;
       display: block;
-      padding: 22px;
+      padding: 16px;
       border: 0;
       resize: vertical;
       outline: none;
       color: #17211e;
       background: var(--field);
       font-family: "SFMono-Regular", "Cascadia Code", "PingFang SC", monospace;
-      font-size: 14px;
-      line-height: 1.54;
+      font-size: 12px;
+      line-height: 1.5;
     }
     .results {
-      padding: 22px;
+      padding: 18px;
     }
     .result-grid {
       display: grid;
@@ -270,11 +270,11 @@ const consoleHTML = `<!doctype html>
       grid-template-columns: 1.15fr .7fr .7fr .7fr auto;
       gap: 10px;
       align-items: center;
-      padding: 13px 14px;
+      padding: 11px 12px;
       border: 1px solid var(--line);
-      border-radius: 18px;
+      border-radius: 14px;
       color: var(--ink);
-      background: rgba(255,255,255,.58);
+      background: rgba(255,255,255,.72);
       text-align: left;
       cursor: pointer;
     }
@@ -298,15 +298,15 @@ const consoleHTML = `<!doctype html>
       font-weight: 900;
     }
     .intent-card {
-      padding: 16px;
-      border-radius: 22px;
+      padding: 13px;
+      border-radius: 16px;
       box-shadow: none;
       animation: lift .32s ease both;
     }
     .intent-card strong {
       display: block;
       margin-top: 5px;
-      font-size: 22px;
+      font-size: 18px;
       word-break: break-word;
     }
     .ok {
@@ -318,28 +318,51 @@ const consoleHTML = `<!doctype html>
       background: linear-gradient(135deg, var(--rust), #743823);
     }
     pre {
-      min-height: 330px;
+      min-height: 300px;
       margin: 0;
-      padding: 18px;
+      padding: 14px;
       overflow: auto;
-      border-radius: 24px;
-      color: #f8f0da;
-      background: #19211f;
+      border-radius: 18px;
+      color: #dce7f3;
+      background: #111821;
       font-family: "SFMono-Regular", "Cascadia Code", "PingFang SC", monospace;
-      font-size: 13px;
+      font-size: 12px;
       line-height: 1.5;
       box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
     }
     .empty {
       color: var(--muted);
-      min-height: 330px;
+      min-height: 300px;
       display: grid;
       place-items: center;
       padding: 26px;
       text-align: center;
       border: 1px dashed rgba(24,33,31,.22);
-      border-radius: 24px;
-      background: rgba(255,255,255,.38);
+      border-radius: 18px;
+      background: rgba(255,255,255,.54);
+    }
+    .log-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin: 18px 0 10px;
+    }
+    .log-toolbar select, .log-toolbar input {
+      width: auto;
+      min-width: 160px;
+    }
+    .log-box {
+      min-height: 260px;
+      max-height: 460px;
+      white-space: pre-wrap;
+      color: #dce7f3;
+      background: #0f1720;
+    }
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
     }
     @keyframes lift {
       from { opacity: 0; transform: translateY(10px); }
@@ -525,6 +548,14 @@ const consoleHTML = `<!doctype html>
           </div>
           <div class="label">任务状态详情</div>
           <div id="output" class="empty">点击“校验”或“归一化”，查看治理意图 governanceIntent 与工作负载意图 workloadIntent 的解析结果。</div>
+          <div class="log-toolbar">
+            <div class="label">运行日志</div>
+            <select id="log-pod"><option value="">自动选择 Pod</option></select>
+            <select id="log-container"><option value="">自动选择容器</option></select>
+            <input id="log-tail" value="200" title="日志行数">
+            <button class="ghost" id="refresh-logs">刷新日志</button>
+          </div>
+          <pre id="logs-output" class="log-box">选择任务后，可查看最近日志。AIJob 用于查看训练输出，AIService 用于查看启动和请求日志。</pre>
         </div>
       </section>
     </section>
@@ -598,6 +629,14 @@ const consoleHTML = `<!doctype html>
             </div>
             <div class="label">任务状态详情</div>
             <div id="monitor-output" class="empty">点击监测任务，查看单任务状态详情。</div>
+            <div class="log-toolbar">
+              <div class="label">运行日志</div>
+              <select id="monitor-log-pod"><option value="">自动选择 Pod</option></select>
+              <select id="monitor-log-container"><option value="">自动选择容器</option></select>
+              <input id="monitor-log-tail" value="200" title="日志行数">
+              <button class="ghost" id="monitor-refresh-logs">刷新日志</button>
+            </div>
+            <pre id="monitor-logs-output" class="log-box">选择监测任务后，可查看最近日志。</pre>
           </div>
         </section>
       </section>
@@ -669,6 +708,16 @@ const consoleHTML = `<!doctype html>
     var cards = document.getElementById("cards");
     var taskList = document.getElementById("task-list");
     var lastAction = document.getElementById("last-action");
+    var selectedTask = null;
+    var selectedMonitorTask = null;
+    var logPod = document.getElementById("log-pod");
+    var logContainer = document.getElementById("log-container");
+    var logTail = document.getElementById("log-tail");
+    var logsOutput = document.getElementById("logs-output");
+    var monitorLogPod = document.getElementById("monitor-log-pod");
+    var monitorLogContainer = document.getElementById("monitor-log-container");
+    var monitorLogTail = document.getElementById("monitor-log-tail");
+    var monitorLogsOutput = document.getElementById("monitor-logs-output");
     var monitorCards = document.getElementById("monitor-cards");
     var monitorTaskList = document.getElementById("monitor-task-list");
     var monitorAlertList = document.getElementById("monitor-alert-list");
@@ -808,6 +857,57 @@ const consoleHTML = `<!doctype html>
       monitorOutput.className = "empty";
       monitorOutput.textContent = message;
       monitorAction.textContent = "错误";
+    }
+    function resetLogSelectors(podSelect, containerSelect) {
+      podSelect.innerHTML = "<option value=\"\">自动选择 Pod</option>";
+      containerSelect.innerHTML = "<option value=\"\">自动选择容器</option>";
+    }
+    function fillLogSelectors(payload, podSelect, containerSelect) {
+      var currentPod = podSelect.value;
+      var currentContainer = containerSelect.value;
+      resetLogSelectors(podSelect, containerSelect);
+      (payload.pods || []).forEach(function(pod) {
+        var option = document.createElement("option");
+        option.value = pod.name;
+        option.textContent = pod.name + (pod.phase ? " · " + pod.phase : "");
+        podSelect.appendChild(option);
+      });
+      if (payload.pod) {
+        podSelect.value = payload.pod;
+      } else if (currentPod) {
+        podSelect.value = currentPod;
+      }
+      var selectedPod = (payload.pods || []).filter(function(pod) { return pod.name === podSelect.value; })[0] || (payload.pods || [])[0];
+      ((selectedPod && selectedPod.containers) || []).forEach(function(name) {
+        var option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        containerSelect.appendChild(option);
+      });
+      if (payload.container) {
+        containerSelect.value = payload.container;
+      } else if (currentContainer) {
+        containerSelect.value = currentContainer;
+      }
+    }
+    function loadLogs(target, controls) {
+      if (!target) {
+        controls.output.textContent = "请先选择一个任务。";
+        return Promise.resolve();
+      }
+      controls.output.textContent = "正在读取日志...";
+      var query = [
+        "tailLines=" + encodeURIComponent(controls.tail.value || "200")
+      ];
+      if (controls.pod.value) query.push("pod=" + encodeURIComponent(controls.pod.value));
+      if (controls.container.value) query.push("container=" + encodeURIComponent(controls.container.value));
+      var path = "/api/v1/ai/applications/" + encodeURIComponent(target.namespace) + "/" + encodeURIComponent(target.name) + "/logs?" + query.join("&");
+      return fetchJSON(path).then(function(data) {
+        fillLogSelectors(data, controls.pod, controls.container);
+        controls.output.textContent = data.logs || "该容器暂无日志输出。";
+      }).catch(function(err) {
+        controls.output.textContent = "日志读取失败：" + err.message;
+      });
     }
     function card(label, value, mode) {
       var node = document.createElement("div");
@@ -973,6 +1073,7 @@ const consoleHTML = `<!doctype html>
     }
     function loadMonitorDetail(namespace, name) {
       monitorAction.textContent = "读取任务详情";
+      selectedMonitorTask = {namespace: namespace, name: name};
       return fetchJSON("/api/v1/ai/applications/" + encodeURIComponent(namespace) + "/" + encodeURIComponent(name) + "/status").then(function(data) {
         monitorOutput.className = "";
         monitorOutput.innerHTML = "";
@@ -980,6 +1081,12 @@ const consoleHTML = `<!doctype html>
         pre.textContent = JSON.stringify(data, null, 2);
         monitorOutput.appendChild(pre);
         monitorAction.textContent = "任务详情已更新";
+        loadLogs(selectedMonitorTask, {
+          pod: monitorLogPod,
+          container: monitorLogContainer,
+          tail: monitorLogTail,
+          output: monitorLogsOutput
+        });
       }).catch(function(err) {
         setMonitorError(err.message);
       });
@@ -996,6 +1103,7 @@ const consoleHTML = `<!doctype html>
     }
     function loadTaskDetail(namespace, name) {
       lastAction.textContent = "读取任务详情";
+      selectedTask = {namespace: namespace, name: name};
       return fetchJSON("/api/v1/ai/applications/" + encodeURIComponent(namespace) + "/" + encodeURIComponent(name) + "/status").then(function(data) {
         cards.innerHTML = "";
         cards.appendChild(card("任务", data.namespace + "/" + data.name, "ok"));
@@ -1003,6 +1111,12 @@ const consoleHTML = `<!doctype html>
         cards.appendChild(card("健康", data.healthy ? "健康" : "未就绪", data.healthy ? "ok" : "warn"));
         cards.appendChild(card("组件数", data.components ? data.components.length : 0, ""));
         setJSON(data, "任务详情已更新");
+        loadLogs(selectedTask, {
+          pod: logPod,
+          container: logContainer,
+          tail: logTail,
+          output: logsOutput
+        });
       }).catch(function(err) {
         setError(err.message);
       });
@@ -1056,9 +1170,25 @@ const consoleHTML = `<!doctype html>
       });
     };
     document.getElementById("refresh-tasks").onclick = refreshTasks;
+    document.getElementById("refresh-logs").onclick = function() {
+      loadLogs(selectedTask, {
+        pod: logPod,
+        container: logContainer,
+        tail: logTail,
+        output: logsOutput
+      });
+    };
     document.getElementById("user-tab").onclick = function() { setActiveView("user"); };
     document.getElementById("monitor-tab").onclick = function() { setActiveView("monitor"); };
     document.getElementById("monitor-refresh").onclick = refreshMonitor;
+    document.getElementById("monitor-refresh-logs").onclick = function() {
+      loadLogs(selectedMonitorTask, {
+        pod: monitorLogPod,
+        container: monitorLogContainer,
+        tail: monitorLogTail,
+        output: monitorLogsOutput
+      });
+    };
     Object.keys(monitorFields).forEach(function(id) {
       monitorFields[id].addEventListener("change", refreshMonitor);
     });

@@ -67,6 +67,9 @@ func TestServerServesConsolePage(t *testing.T) {
 		"/api/v1/ai/applications",
 		"任务列表",
 		"刷新任务",
+		"运行日志",
+		"刷新日志",
+		"/logs",
 		"governanceIntent",
 		"workloadIntent",
 	} {
@@ -136,6 +139,46 @@ func TestServerReturnsApplicationStatus(t *testing.T) {
 	}
 	if summary.Name != "ai-service-northbound-demo" || summary.Namespace != "sock-shop" || !summary.Healthy {
 		t.Fatalf("unexpected summary: %#v", summary)
+	}
+}
+
+func TestServerReturnsApplicationLogs(t *testing.T) {
+	reader := &recordingApplicationReader{
+		logs: map[string]*observe.Logs{
+			"sock-shop/ai-job-demo": {
+				Namespace:   "sock-shop",
+				Application: "ai-job-demo",
+				Pod:         "ai-job-demo-pod",
+				Container:   "main",
+				TailLines:   80,
+				Logs:        "epoch=1 loss=0.42\n",
+				Pods: []observe.LogPod{
+					{
+						Name:       "ai-job-demo-pod",
+						Phase:      "Succeeded",
+						Containers: []string{"main"},
+					},
+				},
+			},
+		},
+	}
+	server := NewServerWithOptions(Options{Reader: reader})
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/applications/sock-shop/ai-job-demo/logs?pod=ai-job-demo-pod&container=main&tailLines=80", nil)
+	server.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload observe.Logs
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if payload.Pod != "ai-job-demo-pod" || payload.Container != "main" || payload.TailLines != 80 || !strings.Contains(payload.Logs, "loss=0.42") {
+		t.Fatalf("unexpected logs payload: %#v", payload)
+	}
+	if reader.logRequest.Namespace != "sock-shop" || reader.logRequest.Name != "ai-job-demo" || reader.logRequest.Pod != "ai-job-demo-pod" || reader.logRequest.Container != "main" || reader.logRequest.TailLines != 80 {
+		t.Fatalf("unexpected log request: %#v", reader.logRequest)
 	}
 }
 
@@ -325,7 +368,9 @@ var _ domainapply.ApplicationApplier = (*recordingApplicationApplier)(nil)
 type recordingApplicationReader struct {
 	items         []observe.ApplicationListItem
 	summaries     map[string]*observe.Summary
+	logs          map[string]*observe.Logs
 	listNamespace string
+	logRequest    observe.LogOptions
 }
 
 func (r *recordingApplicationReader) ListApplications(_ context.Context, namespace string) ([]observe.ApplicationListItem, error) {
@@ -340,4 +385,14 @@ func (r *recordingApplicationReader) SummarizeApplication(_ context.Context, nam
 		return nil, fmt.Errorf("not found")
 	}
 	return summary, nil
+}
+
+func (r *recordingApplicationReader) GetApplicationLogs(_ context.Context, options observe.LogOptions) (*observe.Logs, error) {
+	r.logRequest = options
+	key := options.Namespace + "/" + options.Name
+	logs := r.logs[key]
+	if logs == nil {
+		return nil, fmt.Errorf("not found")
+	}
+	return logs, nil
 }
