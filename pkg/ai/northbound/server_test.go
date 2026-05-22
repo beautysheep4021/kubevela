@@ -69,7 +69,12 @@ func TestServerServesConsolePage(t *testing.T) {
 		"刷新任务",
 		"运行日志",
 		"刷新日志",
+		"删除任务",
+		"重启服务",
+		"重新运行 Job",
+		"操作审计",
 		"/logs",
+		"/api/v1/ai/audits",
 		"governanceIntent",
 		"workloadIntent",
 	} {
@@ -179,6 +184,102 @@ func TestServerReturnsApplicationLogs(t *testing.T) {
 	}
 	if reader.logRequest.Namespace != "sock-shop" || reader.logRequest.Name != "ai-job-demo" || reader.logRequest.Pod != "ai-job-demo-pod" || reader.logRequest.Container != "main" || reader.logRequest.TailLines != 80 {
 		t.Fatalf("unexpected log request: %#v", reader.logRequest)
+	}
+}
+
+func TestServerDeletesApplicationAndRecordsAudit(t *testing.T) {
+	manager := &recordingApplicationManager{}
+	audits := &recordingAuditStore{}
+	server := NewServerWithOptions(Options{Manager: manager, Audits: audits})
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/ai/applications/sock-shop/ai-job-demo", nil)
+	req.Header.Set("X-AI-User", "tester")
+	server.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload observe.LifecycleResult
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if payload.Action != "delete" || payload.Namespace != "sock-shop" || payload.Name != "ai-job-demo" {
+		t.Fatalf("unexpected lifecycle result: %#v", payload)
+	}
+	if manager.deleted != "sock-shop/ai-job-demo" {
+		t.Fatalf("deleted = %q, want sock-shop/ai-job-demo", manager.deleted)
+	}
+	if len(audits.events) != 1 || audits.events[0].Action != "delete" || audits.events[0].Actor != "tester" || audits.events[0].Success != true {
+		t.Fatalf("unexpected audit events: %#v", audits.events)
+	}
+}
+
+func TestServerRestartsApplicationAndRecordsAudit(t *testing.T) {
+	manager := &recordingApplicationManager{}
+	audits := &recordingAuditStore{}
+	server := NewServerWithOptions(Options{Manager: manager, Audits: audits})
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/applications/sock-shop/ai-service-demo/restart", nil)
+	server.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if manager.restarted != "sock-shop/ai-service-demo" {
+		t.Fatalf("restarted = %q, want sock-shop/ai-service-demo", manager.restarted)
+	}
+	if len(audits.events) != 1 || audits.events[0].Action != "restart" || audits.events[0].Actor != "anonymous" {
+		t.Fatalf("unexpected audit events: %#v", audits.events)
+	}
+}
+
+func TestServerRerunsApplicationAndRecordsAudit(t *testing.T) {
+	manager := &recordingApplicationManager{}
+	audits := &recordingAuditStore{}
+	server := NewServerWithOptions(Options{Manager: manager, Audits: audits})
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/applications/sock-shop/ai-job-demo/rerun", nil)
+	server.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if manager.rerun != "sock-shop/ai-job-demo" {
+		t.Fatalf("rerun = %q, want sock-shop/ai-job-demo", manager.rerun)
+	}
+	if len(audits.events) != 1 || audits.events[0].Action != "rerun" {
+		t.Fatalf("unexpected audit events: %#v", audits.events)
+	}
+}
+
+func TestServerListsAuditEvents(t *testing.T) {
+	audits := &recordingAuditStore{
+		events: []observe.AuditEvent{
+			{
+				Namespace: "sock-shop",
+				Name:      "ai-job-demo",
+				Action:    "delete",
+				Actor:     "tester",
+				Success:   true,
+			},
+		},
+	}
+	server := NewServerWithOptions(Options{Audits: audits})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/audits?namespace=sock-shop", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload observe.AuditList
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if len(payload.Items) != 1 || payload.Items[0].Namespace != "sock-shop" || payload.Items[0].Action != "delete" {
+		t.Fatalf("unexpected audits: %#v", payload)
+	}
+	if audits.listNamespace != "sock-shop" {
+		t.Fatalf("list namespace = %q, want sock-shop", audits.listNamespace)
 	}
 }
 
@@ -395,4 +496,40 @@ func (r *recordingApplicationReader) GetApplicationLogs(_ context.Context, optio
 		return nil, fmt.Errorf("not found")
 	}
 	return logs, nil
+}
+
+type recordingApplicationManager struct {
+	deleted   string
+	restarted string
+	rerun     string
+}
+
+func (m *recordingApplicationManager) DeleteApplication(_ context.Context, namespace, name string) (*observe.LifecycleResult, error) {
+	m.deleted = namespace + "/" + name
+	return &observe.LifecycleResult{Action: "delete", Namespace: namespace, Name: name, Message: "delete requested"}, nil
+}
+
+func (m *recordingApplicationManager) RestartApplication(_ context.Context, namespace, name string) (*observe.LifecycleResult, error) {
+	m.restarted = namespace + "/" + name
+	return &observe.LifecycleResult{Action: "restart", Namespace: namespace, Name: name, Message: "restart requested"}, nil
+}
+
+func (m *recordingApplicationManager) RerunApplication(_ context.Context, namespace, name string) (*observe.LifecycleResult, error) {
+	m.rerun = namespace + "/" + name
+	return &observe.LifecycleResult{Action: "rerun", Namespace: namespace, Name: name, Message: "rerun requested"}, nil
+}
+
+type recordingAuditStore struct {
+	events        []observe.AuditEvent
+	listNamespace string
+}
+
+func (s *recordingAuditStore) RecordAudit(_ context.Context, event observe.AuditEvent) error {
+	s.events = append(s.events, event)
+	return nil
+}
+
+func (s *recordingAuditStore) ListAudits(_ context.Context, namespace string) ([]observe.AuditEvent, error) {
+	s.listNamespace = namespace
+	return s.events, nil
 }

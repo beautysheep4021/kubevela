@@ -75,6 +75,8 @@ func buildServerOptions(parsed args) (northbound.Options, error) {
 	return northbound.Options{
 		Applier: domainapply.DynamicApplicationApplier{Client: client},
 		Reader:  reader,
+		Manager: reader,
+		Audits:  reader,
 	}, nil
 }
 

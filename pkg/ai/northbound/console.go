@@ -364,6 +364,28 @@ const consoleHTML = `<!doctype html>
       font-size: 12px;
       line-height: 1.5;
     }
+    .danger {
+      color: #fff;
+      background: var(--rust);
+    }
+    .audit-list {
+      display: grid;
+      gap: 10px;
+      margin: 12px 0 0;
+    }
+    .audit-row {
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,.7);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .audit-row strong {
+      display: block;
+      color: var(--ink);
+      font-size: 13px;
+    }
     @keyframes lift {
       from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: translateY(0); }
@@ -549,6 +571,12 @@ const consoleHTML = `<!doctype html>
           <div class="label">任务状态详情</div>
           <div id="output" class="empty">点击“校验”或“归一化”，查看治理意图 governanceIntent 与工作负载意图 workloadIntent 的解析结果。</div>
           <div class="log-toolbar">
+            <div class="label">生命周期操作</div>
+            <button class="ghost" id="rerun-task">重新运行 Job</button>
+            <button class="ghost" id="restart-task">重启服务</button>
+            <button class="danger" id="delete-task">删除任务</button>
+          </div>
+          <div class="log-toolbar">
             <div class="label">运行日志</div>
             <select id="log-pod"><option value="">自动选择 Pod</option></select>
             <select id="log-container"><option value="">自动选择容器</option></select>
@@ -630,6 +658,12 @@ const consoleHTML = `<!doctype html>
             <div class="label">任务状态详情</div>
             <div id="monitor-output" class="empty">点击监测任务，查看单任务状态详情。</div>
             <div class="log-toolbar">
+              <div class="label">生命周期操作</div>
+              <button class="ghost" id="monitor-rerun-task">重新运行 Job</button>
+              <button class="ghost" id="monitor-restart-task">重启服务</button>
+              <button class="danger" id="monitor-delete-task">删除任务</button>
+            </div>
+            <div class="log-toolbar">
               <div class="label">运行日志</div>
               <select id="monitor-log-pod"><option value="">自动选择 Pod</option></select>
               <select id="monitor-log-container"><option value="">自动选择容器</option></select>
@@ -637,6 +671,13 @@ const consoleHTML = `<!doctype html>
               <button class="ghost" id="monitor-refresh-logs">刷新日志</button>
             </div>
             <pre id="monitor-logs-output" class="log-box">选择监测任务后，可查看最近日志。</pre>
+            <div class="log-toolbar">
+              <div class="label">操作审计</div>
+              <button class="ghost" id="refresh-audits">刷新审计</button>
+            </div>
+            <div id="audit-list" class="audit-list">
+              <div class="empty">点击“刷新审计”，查看最近生命周期操作。</div>
+            </div>
           </div>
         </section>
       </section>
@@ -723,6 +764,7 @@ const consoleHTML = `<!doctype html>
     var monitorAlertList = document.getElementById("monitor-alert-list");
     var monitorOutput = document.getElementById("monitor-output");
     var monitorAction = document.getElementById("monitor-action");
+    var auditList = document.getElementById("audit-list");
     var monitorFields = {};
     ["monitorNamespace", "monitorType", "monitorTenant", "monitorProject", "monitorEnvironment", "monitorHealth"].forEach(function(id) {
       monitorFields[id] = document.getElementById(id);
@@ -909,6 +951,70 @@ const consoleHTML = `<!doctype html>
         controls.output.textContent = "日志读取失败：" + err.message;
       });
     }
+    function lifecyclePath(target, action) {
+      var base = "/api/v1/ai/applications/" + encodeURIComponent(target.namespace) + "/" + encodeURIComponent(target.name);
+      if (action === "delete") return base;
+      return base + "/" + action;
+    }
+    function runLifecycle(target, action, statusNode, after) {
+      if (!target) {
+        statusNode.textContent = "请先选择一个任务。";
+        return Promise.resolve();
+      }
+      if (action === "delete" && !window.confirm("确认删除任务 " + target.namespace + "/" + target.name + "？")) {
+        return Promise.resolve();
+      }
+      statusNode.textContent = "正在执行生命周期操作";
+      return fetch(lifecyclePath(target, action), {
+        method: action === "delete" ? "DELETE" : "POST",
+        headers: {"X-AI-User": "console"}
+      }).then(function(res) {
+        return res.json().then(function(data) {
+          if (!res.ok) {
+            throw new Error(data.error || ("HTTP " + res.status));
+          }
+          return data;
+        });
+      }).then(function(data) {
+        statusNode.textContent = data.message || "操作已提交";
+        if (after) after(data);
+        return refreshAudits();
+      }).catch(function(err) {
+        statusNode.textContent = "操作失败：" + err.message;
+      });
+    }
+    function refreshAudits() {
+      var ns = encodeURIComponent(monitorFields.monitorNamespace.value || fields.namespace.value || "");
+      return fetchJSON("/api/v1/ai/audits?namespace=" + ns).then(function(data) {
+        renderAudits(data.items || []);
+      }).catch(function(err) {
+        auditList.innerHTML = "";
+        var empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "审计读取失败：" + err.message;
+        auditList.appendChild(empty);
+      });
+    }
+    function renderAudits(items) {
+      auditList.innerHTML = "";
+      if (!items.length) {
+        var empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "暂无审计记录。";
+        auditList.appendChild(empty);
+        return;
+      }
+      items.slice(0, 20).forEach(function(item) {
+        var row = document.createElement("div");
+        row.className = "audit-row";
+        row.innerHTML = [
+          "<strong>" + (item.action || "-") + " · " + (item.namespace || "-") + "/" + (item.name || "-") + "</strong>",
+          "<span>" + (item.time || "-") + " · " + (item.actor || "anonymous") + " · " + (item.success ? "成功" : "失败") + "</span>",
+          "<div class=\"hint\">" + (item.error || item.message || "-") + "</div>"
+        ].join("");
+        auditList.appendChild(row);
+      });
+    }
     function card(label, value, mode) {
       var node = document.createElement("div");
       node.className = "intent-card " + (mode || "");
@@ -1067,6 +1173,7 @@ const consoleHTML = `<!doctype html>
         renderTaskRows(monitorTaskList, items, "当前筛选条件下暂无任务。");
         renderTaskRows(monitorAlertList, items.filter(function(item) { return !item.healthy; }), "暂无异常任务。");
         monitorAction.textContent = "监测视图已刷新";
+        refreshAudits();
       }).catch(function(err) {
         setMonitorError(err.message);
       });
@@ -1170,6 +1277,20 @@ const consoleHTML = `<!doctype html>
       });
     };
     document.getElementById("refresh-tasks").onclick = refreshTasks;
+    document.getElementById("delete-task").onclick = function() {
+      runLifecycle(selectedTask, "delete", lastAction, function() {
+        selectedTask = null;
+        refreshTasks();
+      });
+    };
+    document.getElementById("restart-task").onclick = function() {
+      runLifecycle(selectedTask, "restart", lastAction, function() {
+        if (selectedTask) loadTaskDetail(selectedTask.namespace, selectedTask.name);
+      });
+    };
+    document.getElementById("rerun-task").onclick = function() {
+      runLifecycle(selectedTask, "rerun", lastAction, refreshTasks);
+    };
     document.getElementById("refresh-logs").onclick = function() {
       loadLogs(selectedTask, {
         pod: logPod,
@@ -1181,6 +1302,20 @@ const consoleHTML = `<!doctype html>
     document.getElementById("user-tab").onclick = function() { setActiveView("user"); };
     document.getElementById("monitor-tab").onclick = function() { setActiveView("monitor"); };
     document.getElementById("monitor-refresh").onclick = refreshMonitor;
+    document.getElementById("monitor-delete-task").onclick = function() {
+      runLifecycle(selectedMonitorTask, "delete", monitorAction, function() {
+        selectedMonitorTask = null;
+        refreshMonitor();
+      });
+    };
+    document.getElementById("monitor-restart-task").onclick = function() {
+      runLifecycle(selectedMonitorTask, "restart", monitorAction, function() {
+        if (selectedMonitorTask) loadMonitorDetail(selectedMonitorTask.namespace, selectedMonitorTask.name);
+      });
+    };
+    document.getElementById("monitor-rerun-task").onclick = function() {
+      runLifecycle(selectedMonitorTask, "rerun", monitorAction, refreshMonitor);
+    };
     document.getElementById("monitor-refresh-logs").onclick = function() {
       loadLogs(selectedMonitorTask, {
         pod: monitorLogPod,
@@ -1189,6 +1324,7 @@ const consoleHTML = `<!doctype html>
         output: monitorLogsOutput
       });
     };
+    document.getElementById("refresh-audits").onclick = refreshAudits;
     Object.keys(monitorFields).forEach(function(id) {
       monitorFields[id].addEventListener("change", refreshMonitor);
     });

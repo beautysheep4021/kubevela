@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/oam-dev/kubevela/pkg/ai/domain"
 	domainapply "github.com/oam-dev/kubevela/pkg/ai/domain/apply"
@@ -20,6 +21,8 @@ const maxRequestBodyBytes = 1 << 20
 type Options struct {
 	Applier domainapply.ApplicationApplier
 	Reader  ApplicationReader
+	Manager ApplicationManager
+	Audits  AuditStore
 }
 
 type errorResponse struct {
@@ -30,6 +33,17 @@ type ApplicationReader interface {
 	ListApplications(ctx context.Context, namespace string) ([]observe.ApplicationListItem, error)
 	SummarizeApplication(ctx context.Context, namespace, name string) (*observe.Summary, error)
 	GetApplicationLogs(ctx context.Context, options observe.LogOptions) (*observe.Logs, error)
+}
+
+type ApplicationManager interface {
+	DeleteApplication(ctx context.Context, namespace, name string) (*observe.LifecycleResult, error)
+	RestartApplication(ctx context.Context, namespace, name string) (*observe.LifecycleResult, error)
+	RerunApplication(ctx context.Context, namespace, name string) (*observe.LifecycleResult, error)
+}
+
+type AuditStore interface {
+	RecordAudit(ctx context.Context, event observe.AuditEvent) error
+	ListAudits(ctx context.Context, namespace string) ([]observe.AuditEvent, error)
 }
 
 type DeployResponse struct {
@@ -52,7 +66,8 @@ func NewServerWithOptions(options Options) http.Handler {
 	mux.HandleFunc("/api/v1/ai/validate", validate)
 	mux.HandleFunc("/api/v1/ai/normalize", normalize)
 	mux.HandleFunc("/api/v1/ai/applications", applications(options))
-	mux.HandleFunc("/api/v1/ai/applications/", applicationDetail(options.Reader))
+	mux.HandleFunc("/api/v1/ai/applications/", applicationDetail(options))
+	mux.HandleFunc("/api/v1/ai/audits", audits(options.Audits))
 	return mux
 }
 
@@ -145,23 +160,31 @@ func listApplications(reader ApplicationReader, w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, ApplicationsResponse{Items: items})
 }
 
-func applicationDetail(reader ApplicationReader) http.HandlerFunc {
+func applicationDetail(options Options) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
-		if reader == nil {
-			writeError(w, http.StatusServiceUnavailable, "application reader is not configured")
-			return
-		}
 		namespace, name, action, ok := parseApplicationDetailPath(r.URL.Path)
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
+		if r.Method == http.MethodDelete && action == "" {
+			runLifecycleAction(options, w, r, "delete", namespace, name)
+			return
+		}
+		if r.Method == http.MethodPost && (action == "restart" || action == "rerun") {
+			runLifecycleAction(options, w, r, action, namespace, name)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if options.Reader == nil {
+			writeError(w, http.StatusServiceUnavailable, "application reader is not configured")
+			return
+		}
 		if action == "logs" {
-			logs, err := reader.GetApplicationLogs(r.Context(), observe.LogOptions{
+			logs, err := options.Reader.GetApplicationLogs(r.Context(), observe.LogOptions{
 				Namespace: namespace,
 				Name:      name,
 				Pod:       r.URL.Query().Get("pod"),
@@ -175,7 +198,7 @@ func applicationDetail(reader ApplicationReader) http.HandlerFunc {
 			writeJSON(w, http.StatusOK, logs)
 			return
 		}
-		summary, err := reader.SummarizeApplication(r.Context(), namespace, name)
+		summary, err := options.Reader.SummarizeApplication(r.Context(), namespace, name)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
@@ -188,7 +211,7 @@ func parseApplicationDetailPath(path string) (string, string, string, bool) {
 	rest := strings.TrimPrefix(path, "/api/v1/ai/applications/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
 	action := ""
-	if len(parts) == 3 && (parts[2] == "status" || parts[2] == "logs") {
+	if len(parts) == 3 && (parts[2] == "status" || parts[2] == "logs" || parts[2] == "restart" || parts[2] == "rerun") {
 		action = parts[2]
 		parts = parts[:2]
 	}
@@ -204,6 +227,90 @@ func parseApplicationDetailPath(path string) (string, string, string, bool) {
 		return "", "", "", false
 	}
 	return namespace, name, action, true
+}
+
+func runLifecycleAction(options Options, w http.ResponseWriter, r *http.Request, action, namespace, name string) {
+	if options.Manager == nil {
+		writeError(w, http.StatusServiceUnavailable, "application manager is not configured")
+		return
+	}
+	actor := actorFromRequest(r)
+	event := observe.AuditEvent{
+		ID:        auditID(action, namespace, name),
+		Time:      time.Now().UTC().Format(time.RFC3339),
+		Namespace: namespace,
+		Name:      name,
+		Action:    action,
+		Actor:     actor,
+	}
+	var (
+		result *observe.LifecycleResult
+		err    error
+	)
+	switch action {
+	case "delete":
+		result, err = options.Manager.DeleteApplication(r.Context(), namespace, name)
+	case "restart":
+		result, err = options.Manager.RestartApplication(r.Context(), namespace, name)
+	case "rerun":
+		result, err = options.Manager.RerunApplication(r.Context(), namespace, name)
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		event.Success = false
+		event.Error = err.Error()
+		recordAudit(r.Context(), options.Audits, event)
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	event.Success = true
+	if result != nil {
+		event.Message = result.Message
+	}
+	recordAudit(r.Context(), options.Audits, event)
+	writeJSON(w, http.StatusOK, result)
+}
+
+func audits(store AuditStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if store == nil {
+			writeError(w, http.StatusServiceUnavailable, "audit store is not configured")
+			return
+		}
+		items, err := store.ListAudits(r.Context(), r.URL.Query().Get("namespace"))
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, observe.AuditList{Items: items})
+	}
+}
+
+func actorFromRequest(r *http.Request) string {
+	for _, header := range []string{"X-AI-User", "X-User", "X-Forwarded-User"} {
+		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
+			return value
+		}
+	}
+	return "anonymous"
+}
+
+func auditID(action, namespace, name string) string {
+	value := strings.Join([]string{time.Now().UTC().Format("20060102T150405.000000000Z"), action, namespace, name}, "-")
+	return strings.NewReplacer("/", "-", " ", "-").Replace(value)
+}
+
+func recordAudit(ctx context.Context, store AuditStore, event observe.AuditEvent) {
+	if store == nil {
+		return
+	}
+	_ = store.RecordAudit(ctx, event)
 }
 
 func deploy(applier domainapply.ApplicationApplier) http.HandlerFunc {

@@ -87,6 +87,29 @@ type LogPod struct {
 	Containers []string `json:"containers,omitempty"`
 }
 
+type LifecycleResult struct {
+	Action    string `json:"action"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+	Message   string `json:"message,omitempty"`
+}
+
+type AuditEvent struct {
+	ID        string `json:"id,omitempty"`
+	Time      string `json:"time,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+	Action    string `json:"action"`
+	Actor     string `json:"actor,omitempty"`
+	Success   bool   `json:"success"`
+	Message   string `json:"message,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+type AuditList struct {
+	Items []AuditEvent `json:"items"`
+}
+
 type ContainerSummary struct {
 	Name         string `json:"name"`
 	Ready        bool   `json:"ready"`

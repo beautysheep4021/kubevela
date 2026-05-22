@@ -2,9 +2,12 @@ package observe
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
+	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -214,6 +217,172 @@ func (c Client) GetApplicationLogs(ctx context.Context, options LogOptions) (*Lo
 	}, nil
 }
 
+func (c Client) DeleteApplication(ctx context.Context, namespace, name string) (*LifecycleResult, error) {
+	if c.Dynamic == nil {
+		return nil, fmt.Errorf("dynamic client is required")
+	}
+	if namespace == "" {
+		return nil, fmt.Errorf("namespace is required")
+	}
+	if name == "" {
+		return nil, fmt.Errorf("application name is required")
+	}
+	if err := c.Dynamic.Resource(applicationGVR).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+		return nil, fmt.Errorf("delete Application %s/%s: %w", namespace, name, err)
+	}
+	return &LifecycleResult{
+		Action:    "delete",
+		Namespace: namespace,
+		Name:      name,
+		Message:   "delete requested",
+	}, nil
+}
+
+func (c Client) RestartApplication(ctx context.Context, namespace, name string) (*LifecycleResult, error) {
+	if c.Dynamic == nil {
+		return nil, fmt.Errorf("dynamic client is required")
+	}
+	if namespace == "" {
+		return nil, fmt.Errorf("namespace is required")
+	}
+	if name == "" {
+		return nil, fmt.Errorf("application name is required")
+	}
+	deployments, err := c.Dynamic.Resource(deploymentGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.oam.dev/name=" + name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list deployments for Application %s/%s: %w", namespace, name, err)
+	}
+	if len(deployments.Items) == 0 {
+		return nil, fmt.Errorf("no deployments found for Application %s/%s", namespace, name)
+	}
+	restartedAt := time.Now().UTC().Format(time.RFC3339)
+	for i := range deployments.Items {
+		deploy := &deployments.Items[i]
+		annotations, _, _ := unstructured.NestedStringMap(deploy.Object, "spec", "template", "metadata", "annotations")
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations["kubectl.kubernetes.io/restartedAt"] = restartedAt
+		if err := unstructured.SetNestedStringMap(deploy.Object, annotations, "spec", "template", "metadata", "annotations"); err != nil {
+			return nil, fmt.Errorf("set restart annotation for Deployment %s/%s: %w", namespace, deploy.GetName(), err)
+		}
+		if _, err := c.Dynamic.Resource(deploymentGVR).Namespace(namespace).Update(ctx, deploy, metav1.UpdateOptions{}); err != nil {
+			return nil, fmt.Errorf("update Deployment %s/%s for restart: %w", namespace, deploy.GetName(), err)
+		}
+	}
+	return &LifecycleResult{
+		Action:    "restart",
+		Namespace: namespace,
+		Name:      name,
+		Message:   fmt.Sprintf("restart requested for %d deployment(s)", len(deployments.Items)),
+	}, nil
+}
+
+func (c Client) RerunApplication(ctx context.Context, namespace, name string) (*LifecycleResult, error) {
+	if c.Dynamic == nil {
+		return nil, fmt.Errorf("dynamic client is required")
+	}
+	if namespace == "" {
+		return nil, fmt.Errorf("namespace is required")
+	}
+	if name == "" {
+		return nil, fmt.Errorf("application name is required")
+	}
+	app, err := c.Dynamic.Resource(applicationGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get Application %s/%s: %w", namespace, name, err)
+	}
+	if !applicationHasWorkloadType(app, "ai-job") {
+		return nil, fmt.Errorf("Application %s/%s is not an AIJob", namespace, name)
+	}
+	rerunName := rerunApplicationName(name, time.Now().UTC())
+	copy := app.DeepCopy()
+	copy.SetResourceVersion("")
+	copy.SetUID("")
+	copy.SetGeneration(0)
+	copy.SetManagedFields(nil)
+	copy.SetFinalizers(nil)
+	copy.SetName(rerunName)
+	copy.SetCreationTimestamp(metav1.Time{})
+	copy.SetAnnotations(withString(copy.GetAnnotations(), "ai.oam.dev/rerun-from", name))
+	unstructured.RemoveNestedField(copy.Object, "status")
+	if _, err := c.Dynamic.Resource(applicationGVR).Namespace(namespace).Create(ctx, copy, metav1.CreateOptions{}); err != nil {
+		return nil, fmt.Errorf("create rerun Application %s/%s from %s: %w", namespace, rerunName, name, err)
+	}
+	return &LifecycleResult{
+		Action:    "rerun",
+		Namespace: namespace,
+		Name:      rerunName,
+		Message:   "rerun application created from " + name,
+	}, nil
+}
+
+func (c Client) RecordAudit(ctx context.Context, event AuditEvent) error {
+	if c.Kube == nil {
+		return fmt.Errorf("kubernetes client is required for audit")
+	}
+	if event.Namespace == "" {
+		return fmt.Errorf("namespace is required")
+	}
+	if event.ID == "" {
+		event.ID = auditEventID(event)
+	}
+	if event.Time == "" {
+		event.Time = time.Now().UTC().Format(time.RFC3339)
+	}
+	content, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("encode audit event: %w", err)
+	}
+	name := auditConfigMapName(event.ID)
+	_, err = c.Kube.CoreV1().ConfigMaps(event.Namespace).Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: event.Namespace,
+			Labels: map[string]string{
+				"ai.oam.dev/audit":  "true",
+				"ai.oam.dev/action": event.Action,
+				"ai.oam.dev/name":   event.Name,
+			},
+		},
+		Data: map[string]string{"event.json": string(content)},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("create audit ConfigMap %s/%s: %w", event.Namespace, name, err)
+	}
+	return nil
+}
+
+func (c Client) ListAudits(ctx context.Context, namespace string) ([]AuditEvent, error) {
+	if c.Kube == nil {
+		return nil, fmt.Errorf("kubernetes client is required for audit")
+	}
+	list, err := c.Kube.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "ai.oam.dev/audit=true",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list audit ConfigMaps: %w", err)
+	}
+	items := make([]AuditEvent, 0, len(list.Items))
+	for i := range list.Items {
+		raw := list.Items[i].Data["event.json"]
+		if raw == "" {
+			continue
+		}
+		var event AuditEvent
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			continue
+		}
+		items = append(items, event)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Time > items[j].Time
+	})
+	return items, nil
+}
+
 func applicationListItem(app *unstructured.Unstructured) (ApplicationListItem, bool) {
 	components, workloadTypes := applicationComponents(app)
 	if len(components) == 0 {
@@ -298,6 +467,54 @@ func firstContainerName(pod *unstructured.Unstructured) string {
 		}
 	}
 	return ""
+}
+
+func applicationHasWorkloadType(app *unstructured.Unstructured, componentType string) bool {
+	components, _, _ := unstructured.NestedSlice(app.Object, "spec", "components")
+	for _, raw := range components {
+		component, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if stringFromMap(component, "type") == componentType {
+			return true
+		}
+	}
+	return false
+}
+
+func rerunApplicationName(name string, at time.Time) string {
+	base := name
+	maxBaseLen := 44
+	if len(base) > maxBaseLen {
+		base = base[:maxBaseLen]
+	}
+	return strings.ToLower(base + "-rerun-" + at.Format("0102150405"))
+}
+
+func withString(values map[string]string, key, value string) map[string]string {
+	if values == nil {
+		values = map[string]string{}
+	}
+	values[key] = value
+	return values
+}
+
+func auditConfigMapName(id string) string {
+	name := "ai-audit-" + strings.ToLower(strings.NewReplacer("_", "-", ".", "-", ":", "-", "/", "-").Replace(id))
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	return strings.Trim(name, "-")
+}
+
+func auditEventID(event AuditEvent) string {
+	base := strings.Join([]string{event.Time, event.Action, event.Namespace, event.Name}, "-")
+	base = strings.NewReplacer(":", "-", ".", "-", "/", "-", " ", "-").Replace(base)
+	if base == "" {
+		return time.Now().UTC().Format("20060102T150405.000000000Z")
+	}
+	return base
 }
 
 func mergeRuntimeTraitMetadata(target map[string]string, app *unstructured.Unstructured) {
