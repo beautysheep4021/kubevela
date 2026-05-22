@@ -729,27 +729,43 @@ const consoleHTML = `<!doctype html>
       "apiVersion: ai.oam.dev/v1alpha1",
       "kind: AIJob",
       "metadata:",
-      "  name: evaluator-demo",
-      "  namespace: ai-demo",
+      "  name: delivery-train-demo",
+      "  namespace: sock-shop",
       "spec:",
-      "  componentName: batch-evaluator",
+      "  componentName: delivery-trainer",
       "  properties:",
       "    image: busybox:1.36",
-      "    jobKind: evaluation",
+      "    imagePullPolicy: IfNotPresent",
+      "    jobKind: training",
+      "    cmd:",
+      "      - sh",
+      "      - -c",
+      "    args:",
+      "      - |",
+      "        echo train-start",
+      "        echo epoch=1 loss=0.30",
+      "        echo epoch=2 loss=0.12",
+      "        echo 'AI_RESULT_JSON={\"modelURI\":\"inline://models/delivery-demo/v1\",\"metrics\":{\"loss\":0.12,\"accuracy\":0.98},\"summary\":\"trained-for-delivery\"}'",
+      "        echo train-complete",
       "    dataset:",
-      "      name: eval-set",
-      "      uri: oss://datasets/eval-set/v1",
+      "      name: tiny-delivery",
+      "      uri: inline://datasets/tiny-delivery",
       "    output:",
-      "      uri: oss://outputs/eval-run/v1",
-      "    ttlSecondsAfterFinished: 300",
+      "      uri: inline://outputs/delivery-demo",
+      "    backoffLimit: 0",
+      "    ttlSecondsAfterFinished: 3600",
       "  runtime:",
       "    runtime: batch",
       "    framework: shell",
       "    tenant: demo-tenant",
-      "    project: evaluation",
+      "    project: delivery-demo",
       "    environment: poc",
       "    owner: ai-platform",
-      "    datasetURI: oss://datasets/eval-set/v1"
+      "    datasetURI: inline://datasets/tiny-delivery",
+      "  placement:",
+      "    namespace: sock-shop",
+      "    clusters:",
+      "    - local"
     ].join("\n");
 
     var yaml = document.getElementById("yaml");
@@ -876,19 +892,19 @@ const consoleHTML = `<!doctype html>
     }
     function fillJobForm() {
       setValue("kind", "AIJob");
-      setValue("name", "evaluator-demo");
-      setValue("namespace", "ai-demo");
-      setValue("component", "batch-evaluator");
+      setValue("name", "delivery-train-demo");
+      setValue("namespace", "sock-shop");
+      setValue("component", "delivery-trainer");
       setValue("tenant", "demo-tenant");
-      setValue("project", "evaluation");
+      setValue("project", "delivery-demo");
       setValue("environment", "poc");
       setValue("owner", "ai-platform");
       setValue("runtime", "batch");
       setValue("image", "busybox:1.36");
-      setValue("jobKind", "evaluation");
-      setValue("ttl", "300");
-      setValue("datasetURI", "oss://datasets/eval-set/v1");
-      setValue("outputURI", "oss://outputs/eval-run/v1");
+      setValue("jobKind", "training");
+      setValue("ttl", "3600");
+      setValue("datasetURI", "inline://datasets/tiny-delivery");
+      setValue("outputURI", "inline://outputs/delivery-demo");
       generateYAML();
     }
 
@@ -965,34 +981,45 @@ const consoleHTML = `<!doctype html>
     function deliveryBase(target) {
       return "/api/v1/ai/deliveries/" + encodeURIComponent(target.namespace) + "/" + encodeURIComponent(target.name);
     }
+    function deliveryTargetFromSelectionOrForm() {
+      if (selectedTask) {
+        return selectedTask;
+      }
+      if (fields.kind.value === "AIJob" && fields.name.value && fields.namespace.value) {
+        return {namespace: fields.namespace.value, name: fields.name.value};
+      }
+      return null;
+    }
     function parseDeliveryResult() {
-      if (!selectedTask) {
-        deliveryOutput.textContent = "请先选择一个 AIJob。";
+      var target = deliveryTargetFromSelectionOrForm();
+      if (!target) {
+        deliveryOutput.textContent = "请先选择一个已提交并完成的 AIJob，或在左侧表单载入 AIJob 后先提交部署。";
         return Promise.resolve();
       }
       deliveryOutput.textContent = "正在解析训练结果...";
-      return fetchJSON(deliveryBase(selectedTask) + "/result").then(function(data) {
+      return fetchJSON(deliveryBase(target) + "/result").then(function(data) {
         deliveryOutput.textContent = JSON.stringify(data, null, 2);
         if (!deliveryServiceName.value) {
-          deliveryServiceName.value = selectedTask.name + "-service";
+          deliveryServiceName.value = target.name + "-service";
         }
       }).catch(function(err) {
-        deliveryOutput.textContent = "训练结果解析失败：" + err.message;
+        deliveryOutput.textContent = "训练结果解析失败：" + err.message + "\\n\\n请确认：1. 这个 AIJob 已经提交部署；2. Job 已完成；3. 日志里包含 AI_RESULT_JSON=...。";
       });
     }
     function publishDeliveryService() {
-      if (!selectedTask) {
-        deliveryOutput.textContent = "请先选择一个 AIJob。";
+      var target = deliveryTargetFromSelectionOrForm();
+      if (!target) {
+        deliveryOutput.textContent = "请先选择一个已提交并完成的 AIJob，或在左侧表单载入 AIJob 后先提交部署。";
         return Promise.resolve();
       }
       var payload = {
-        serviceName: deliveryServiceName.value || (selectedTask.name + "-service"),
+        serviceName: deliveryServiceName.value || (target.name + "-service"),
         image: deliveryServiceImage.value || "python:3.11-slim",
         port: 8080,
         servicePort: 80
       };
       deliveryOutput.textContent = "正在发布 AIService...";
-      return fetch(deliveryBase(selectedTask) + "/publish-service", {
+      return fetch(deliveryBase(target) + "/publish-service", {
         method: "POST",
         headers: {"Content-Type": "application/json", "X-AI-User": "console"},
         body: JSON.stringify(payload)
@@ -1008,7 +1035,7 @@ const consoleHTML = `<!doctype html>
         refreshTasks();
         refreshAudits();
       }).catch(function(err) {
-        deliveryOutput.textContent = "发布服务失败：" + err.message;
+        deliveryOutput.textContent = "发布服务失败：" + err.message + "\\n\\n请先解析训练结果，确认该 AIJob 日志中存在 modelURI。";
       });
     }
     function lifecyclePath(target, action) {
@@ -1294,7 +1321,10 @@ const consoleHTML = `<!doctype html>
     };
     document.getElementById("load-job").onclick = function() {
       fillJobForm();
-      lastAction.textContent = "已载入任务样例";
+      selectedTask = null;
+      deliveryServiceName.value = "";
+      deliveryOutput.textContent = "已载入可交付 AIJob 样例。下一步：取消 DryRun 后点击“提交部署”，等待 Job 完成，再点击“解析训练结果”。";
+      lastAction.textContent = "已载入可交付任务样例";
     };
     document.getElementById("generate").onclick = function() {
       generateYAML();
