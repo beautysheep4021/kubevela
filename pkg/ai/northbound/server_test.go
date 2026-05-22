@@ -354,7 +354,7 @@ func TestServerPublishesDeliveryResultAsAIService(t *testing.T) {
 		t.Fatalf("unexpected applier call: %#v", applier)
 	}
 	content := string(applier.content)
-	for _, expected := range []string{"kind: Application", "type: ai-service", "modelURI: inline://models/train-demo/v1", "name: train-demo-service"} {
+	for _, expected := range []string{"kind: Application", "type: ai-service", "modelURI: inline://models/train-demo/v1", "name: train-demo-service", "cmd:", "socketserver.TCPServer", "serve model"} {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("expected translated AIService Application to contain %q, got:\n%s", expected, content)
 		}

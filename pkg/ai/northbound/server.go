@@ -488,6 +488,29 @@ spec:
   properties:
     image: %s
     replicas: 1
+    cmd:
+      - python
+      - -c
+    args:
+      - |
+        import http.server, json, socketserver, urllib.parse
+        model_uri = %q
+        port = %d
+        print("serve model " + model_uri + " on :" + str(port), flush=True)
+        class Handler(http.server.BaseHTTPRequestHandler):
+          def do_GET(self):
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == "/healthz":
+              payload = {"status": "ok", "modelURI": model_uri}
+            else:
+              payload = {"modelURI": model_uri, "path": parsed.path}
+            body = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        socketserver.TCPServer(("", port), Handler).serve_forever()
     model:
       name: %s
       uri: %s
@@ -507,7 +530,7 @@ spec:
     namespace: %s
     clusters:
       - local
-`, request.ServiceName, namespace, request.ServiceName, request.Image, jobName, result.ModelURI, request.Port, request.ServicePort, result.ModelURI, namespace)
+`, request.ServiceName, namespace, request.ServiceName, request.Image, result.ModelURI, request.Port, jobName, result.ModelURI, request.Port, request.ServicePort, result.ModelURI, namespace)
 }
 
 func actorFromRequest(r *http.Request) string {
