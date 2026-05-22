@@ -73,8 +73,12 @@ func TestServerServesConsolePage(t *testing.T) {
 		"重启服务",
 		"重新运行 Job",
 		"操作审计",
+		"应用交付",
+		"解析训练结果",
+		"发布为服务",
 		"/logs",
 		"/api/v1/ai/audits",
+		"/api/v1/ai/deliveries",
 		"governanceIntent",
 		"workloadIntent",
 	} {
@@ -280,6 +284,83 @@ func TestServerListsAuditEvents(t *testing.T) {
 	}
 	if audits.listNamespace != "sock-shop" {
 		t.Fatalf("list namespace = %q, want sock-shop", audits.listNamespace)
+	}
+}
+
+func TestServerExtractsDeliveryResultFromAIJobLogs(t *testing.T) {
+	reader := &recordingApplicationReader{
+		logs: map[string]*observe.Logs{
+			"sock-shop/train-demo": {
+				Namespace:   "sock-shop",
+				Application: "train-demo",
+				Pod:         "train-demo-pod",
+				Container:   "trainer",
+				Logs: strings.Join([]string{
+					"epoch=1 loss=0.3",
+					`AI_RESULT_JSON={"modelURI":"inline://models/train-demo/v1","metrics":{"loss":0.12,"accuracy":0.98},"summary":"trained"}`,
+					"done",
+				}, "\n"),
+			},
+		},
+	}
+	server := NewServerWithOptions(Options{Reader: reader})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/deliveries/sock-shop/train-demo/result", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload DeliveryResultResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if payload.Namespace != "sock-shop" || payload.JobName != "train-demo" || payload.Result.ModelURI != "inline://models/train-demo/v1" {
+		t.Fatalf("unexpected delivery result: %#v", payload)
+	}
+	if payload.Result.Metrics["accuracy"] != 0.98 || payload.Result.Summary != "trained" {
+		t.Fatalf("unexpected metrics: %#v", payload.Result)
+	}
+}
+
+func TestServerPublishesDeliveryResultAsAIService(t *testing.T) {
+	reader := &recordingApplicationReader{
+		logs: map[string]*observe.Logs{
+			"sock-shop/train-demo": {
+				Logs: `AI_RESULT_JSON={"modelURI":"inline://models/train-demo/v1","metrics":{"loss":0.12}}`,
+			},
+		},
+	}
+	applier := &recordingApplicationApplier{}
+	audits := &recordingAuditStore{}
+	server := NewServerWithOptions(Options{Reader: reader, Applier: applier, Audits: audits})
+	body := strings.NewReader(`{"serviceName":"train-demo-service","image":"python:3.11-slim","port":8080,"servicePort":80}`)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/deliveries/sock-shop/train-demo/publish-service", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-AI-User", "tester")
+	server.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload DeliveryPublishResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if payload.ServiceName != "train-demo-service" || payload.ModelURI != "inline://models/train-demo/v1" {
+		t.Fatalf("unexpected publish response: %#v", payload)
+	}
+	if !applier.called || applier.namespace != "sock-shop" || applier.name != "train-demo-service" {
+		t.Fatalf("unexpected applier call: %#v", applier)
+	}
+	content := string(applier.content)
+	for _, expected := range []string{"kind: Application", "type: ai-service", "modelURI: inline://models/train-demo/v1", "name: train-demo-service"} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("expected translated AIService Application to contain %q, got:\n%s", expected, content)
+		}
+	}
+	if len(audits.events) != 1 || audits.events[0].Action != "publish-service" || audits.events[0].Actor != "tester" {
+		t.Fatalf("unexpected audit events: %#v", audits.events)
 	}
 }
 

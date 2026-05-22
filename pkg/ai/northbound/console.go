@@ -571,6 +571,14 @@ const consoleHTML = `<!doctype html>
           <div class="label">任务状态详情</div>
           <div id="output" class="empty">点击“校验”或“归一化”，查看治理意图 governanceIntent 与工作负载意图 workloadIntent 的解析结果。</div>
           <div class="log-toolbar">
+            <div class="label">应用交付</div>
+            <input id="delivery-service-name" placeholder="发布服务名，默认 job-service">
+            <input id="delivery-service-image" value="python:3.11-slim" title="服务镜像">
+            <button class="ghost" id="parse-delivery-result">解析训练结果</button>
+            <button class="secondary" id="publish-delivery-service">发布为服务</button>
+          </div>
+          <pre id="delivery-output" class="log-box">选择 AIJob 后，可解析 AI_RESULT_JSON 并发布为 AIService。接口：/api/v1/ai/deliveries</pre>
+          <div class="log-toolbar">
             <div class="label">生命周期操作</div>
             <button class="ghost" id="rerun-task">重新运行 Job</button>
             <button class="ghost" id="restart-task">重启服务</button>
@@ -755,6 +763,9 @@ const consoleHTML = `<!doctype html>
     var logContainer = document.getElementById("log-container");
     var logTail = document.getElementById("log-tail");
     var logsOutput = document.getElementById("logs-output");
+    var deliveryOutput = document.getElementById("delivery-output");
+    var deliveryServiceName = document.getElementById("delivery-service-name");
+    var deliveryServiceImage = document.getElementById("delivery-service-image");
     var monitorLogPod = document.getElementById("monitor-log-pod");
     var monitorLogContainer = document.getElementById("monitor-log-container");
     var monitorLogTail = document.getElementById("monitor-log-tail");
@@ -949,6 +960,55 @@ const consoleHTML = `<!doctype html>
         controls.output.textContent = data.logs || "该容器暂无日志输出。";
       }).catch(function(err) {
         controls.output.textContent = "日志读取失败：" + err.message;
+      });
+    }
+    function deliveryBase(target) {
+      return "/api/v1/ai/deliveries/" + encodeURIComponent(target.namespace) + "/" + encodeURIComponent(target.name);
+    }
+    function parseDeliveryResult() {
+      if (!selectedTask) {
+        deliveryOutput.textContent = "请先选择一个 AIJob。";
+        return Promise.resolve();
+      }
+      deliveryOutput.textContent = "正在解析训练结果...";
+      return fetchJSON(deliveryBase(selectedTask) + "/result").then(function(data) {
+        deliveryOutput.textContent = JSON.stringify(data, null, 2);
+        if (!deliveryServiceName.value) {
+          deliveryServiceName.value = selectedTask.name + "-service";
+        }
+      }).catch(function(err) {
+        deliveryOutput.textContent = "训练结果解析失败：" + err.message;
+      });
+    }
+    function publishDeliveryService() {
+      if (!selectedTask) {
+        deliveryOutput.textContent = "请先选择一个 AIJob。";
+        return Promise.resolve();
+      }
+      var payload = {
+        serviceName: deliveryServiceName.value || (selectedTask.name + "-service"),
+        image: deliveryServiceImage.value || "python:3.11-slim",
+        port: 8080,
+        servicePort: 80
+      };
+      deliveryOutput.textContent = "正在发布 AIService...";
+      return fetch(deliveryBase(selectedTask) + "/publish-service", {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-AI-User": "console"},
+        body: JSON.stringify(payload)
+      }).then(function(res) {
+        return res.json().then(function(data) {
+          if (!res.ok) {
+            throw new Error(data.error || ("HTTP " + res.status));
+          }
+          return data;
+        });
+      }).then(function(data) {
+        deliveryOutput.textContent = JSON.stringify(data, null, 2);
+        refreshTasks();
+        refreshAudits();
+      }).catch(function(err) {
+        deliveryOutput.textContent = "发布服务失败：" + err.message;
       });
     }
     function lifecyclePath(target, action) {
@@ -1277,6 +1337,8 @@ const consoleHTML = `<!doctype html>
       });
     };
     document.getElementById("refresh-tasks").onclick = refreshTasks;
+    document.getElementById("parse-delivery-result").onclick = parseDeliveryResult;
+    document.getElementById("publish-delivery-service").onclick = publishDeliveryService;
     document.getElementById("delete-task").onclick = function() {
       runLifecycle(selectedTask, "delete", lastAction, function() {
         selectedTask = null;

@@ -55,6 +55,34 @@ type ApplicationsResponse struct {
 	Items []observe.ApplicationListItem `json:"items"`
 }
 
+type DeliveryResult struct {
+	ModelURI string                 `json:"modelURI"`
+	Metrics  map[string]float64     `json:"metrics,omitempty"`
+	Summary  string                 `json:"summary,omitempty"`
+	Raw      map[string]interface{} `json:"raw,omitempty"`
+}
+
+type DeliveryResultResponse struct {
+	Namespace string         `json:"namespace"`
+	JobName   string         `json:"jobName"`
+	Result    DeliveryResult `json:"result"`
+}
+
+type DeliveryPublishRequest struct {
+	ServiceName string `json:"serviceName"`
+	Image       string `json:"image"`
+	Port        int64  `json:"port"`
+	ServicePort int64  `json:"servicePort"`
+}
+
+type DeliveryPublishResponse struct {
+	Namespace   string             `json:"namespace"`
+	JobName     string             `json:"jobName"`
+	ServiceName string             `json:"serviceName"`
+	ModelURI    string             `json:"modelURI"`
+	Application domainapply.Result `json:"application"`
+}
+
 func NewServer() http.Handler {
 	return NewServerWithOptions(Options{})
 }
@@ -68,6 +96,7 @@ func NewServerWithOptions(options Options) http.Handler {
 	mux.HandleFunc("/api/v1/ai/applications", applications(options))
 	mux.HandleFunc("/api/v1/ai/applications/", applicationDetail(options))
 	mux.HandleFunc("/api/v1/ai/audits", audits(options.Audits))
+	mux.HandleFunc("/api/v1/ai/deliveries/", deliveries(options))
 	return mux
 }
 
@@ -290,6 +319,195 @@ func audits(store AuditStore) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, observe.AuditList{Items: items})
 	}
+}
+
+func deliveries(options Options) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		namespace, jobName, action, ok := parseDeliveryPath(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && action == "result":
+			result, err := deliveryResultFromJobLogs(r.Context(), options.Reader, namespace, jobName)
+			if err != nil {
+				writeError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, DeliveryResultResponse{
+				Namespace: namespace,
+				JobName:   jobName,
+				Result:    result,
+			})
+		case r.Method == http.MethodPost && action == "publish-service":
+			publishDeliveryService(options, w, r, namespace, jobName)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	}
+}
+
+func parseDeliveryPath(path string) (string, string, string, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/ai/deliveries/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", "", "", false
+	}
+	namespace, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return "", "", "", false
+	}
+	name, err := url.PathUnescape(parts[1])
+	if err != nil {
+		return "", "", "", false
+	}
+	return namespace, name, parts[2], true
+}
+
+func deliveryResultFromJobLogs(ctx context.Context, reader ApplicationReader, namespace, jobName string) (DeliveryResult, error) {
+	if reader == nil {
+		return DeliveryResult{}, fmt.Errorf("application reader is not configured")
+	}
+	logs, err := reader.GetApplicationLogs(ctx, observe.LogOptions{
+		Namespace: namespace,
+		Name:      jobName,
+		TailLines: 500,
+	})
+	if err != nil {
+		return DeliveryResult{}, err
+	}
+	return parseDeliveryResult(logs.Logs)
+}
+
+func parseDeliveryResult(logs string) (DeliveryResult, error) {
+	const marker = "AI_RESULT_JSON="
+	lines := strings.Split(logs, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, marker) {
+			continue
+		}
+		rawJSON := strings.TrimSpace(strings.TrimPrefix(line, marker))
+		var raw map[string]interface{}
+		if err := json.Unmarshal([]byte(rawJSON), &raw); err != nil {
+			return DeliveryResult{}, fmt.Errorf("decode AI_RESULT_JSON: %w", err)
+		}
+		modelURI, _ := raw["modelURI"].(string)
+		if modelURI == "" {
+			return DeliveryResult{}, fmt.Errorf("AI_RESULT_JSON.modelURI is required")
+		}
+		result := DeliveryResult{
+			ModelURI: modelURI,
+			Metrics:  map[string]float64{},
+			Raw:      raw,
+		}
+		if summary, ok := raw["summary"].(string); ok {
+			result.Summary = summary
+		}
+		if metrics, ok := raw["metrics"].(map[string]interface{}); ok {
+			for key, value := range metrics {
+				if number, ok := value.(float64); ok {
+					result.Metrics[key] = number
+				}
+			}
+		}
+		if len(result.Metrics) == 0 {
+			result.Metrics = nil
+		}
+		return result, nil
+	}
+	return DeliveryResult{}, fmt.Errorf("AI_RESULT_JSON marker was not found in job logs")
+}
+
+func publishDeliveryService(options Options, w http.ResponseWriter, r *http.Request, namespace, jobName string) {
+	if options.Applier == nil {
+		writeError(w, http.StatusServiceUnavailable, "deployment is not configured")
+		return
+	}
+	result, err := deliveryResultFromJobLogs(r.Context(), options.Reader, namespace, jobName)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	var request DeliveryPublishRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("decode publish request: %v", err))
+		return
+	}
+	if request.ServiceName == "" {
+		request.ServiceName = jobName + "-service"
+	}
+	if request.Image == "" {
+		request.Image = "python:3.11-slim"
+	}
+	if request.Port == 0 {
+		request.Port = 8080
+	}
+	if request.ServicePort == 0 {
+		request.ServicePort = 80
+	}
+	domainYAML := deliveryServiceYAML(namespace, jobName, request, result)
+	appYAML, err := domain.TranslateYAML([]byte(domainYAML))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	applied, err := domainapply.ApplyYAMLWithApplier(r.Context(), options.Applier, appYAML, domainapply.Options{})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	recordAudit(r.Context(), options.Audits, observe.AuditEvent{
+		ID:        auditID("publish-service", namespace, request.ServiceName),
+		Time:      time.Now().UTC().Format(time.RFC3339),
+		Namespace: namespace,
+		Name:      request.ServiceName,
+		Action:    "publish-service",
+		Actor:     actorFromRequest(r),
+		Success:   true,
+		Message:   "published service from " + jobName,
+	})
+	writeJSON(w, http.StatusOK, DeliveryPublishResponse{
+		Namespace:   namespace,
+		JobName:     jobName,
+		ServiceName: request.ServiceName,
+		ModelURI:    result.ModelURI,
+		Application: applied,
+	})
+}
+
+func deliveryServiceYAML(namespace, jobName string, request DeliveryPublishRequest, result DeliveryResult) string {
+	return fmt.Sprintf(`apiVersion: ai.oam.dev/v1alpha1
+kind: AIService
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  componentName: %s
+  properties:
+    image: %s
+    replicas: 1
+    model:
+      name: %s
+      uri: %s
+    endpoint:
+      port: %d
+      servicePort: %d
+      type: ClusterIP
+  runtime:
+    runtime: http
+    framework: delivery-poc
+    tenant: demo-tenant
+    project: delivery
+    environment: poc
+    owner: ai-platform
+    modelURI: %s
+  placement:
+    namespace: %s
+    clusters:
+      - local
+`, request.ServiceName, namespace, request.ServiceName, request.Image, jobName, result.ModelURI, request.Port, request.ServicePort, result.ModelURI, namespace)
 }
 
 func actorFromRequest(r *http.Request) string {
