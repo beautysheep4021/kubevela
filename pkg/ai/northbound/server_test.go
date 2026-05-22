@@ -88,6 +88,18 @@ func TestServerServesConsolePage(t *testing.T) {
 	}
 }
 
+func TestConsoleGeneratedAIJobIncludesDeliveryResultMarker(t *testing.T) {
+	for _, expected := range []string{
+		"function buildDeliveryJobResultScript",
+		"AI_RESULT_JSON=",
+		"inline://models/\" + fields.name.value + \"/v1",
+	} {
+		if !strings.Contains(consoleHTML, expected) {
+			t.Fatalf("console AIJob generator missing %q", expected)
+		}
+	}
+}
+
 func TestServerListsApplications(t *testing.T) {
 	reader := &recordingApplicationReader{
 		items: []observe.ApplicationListItem{

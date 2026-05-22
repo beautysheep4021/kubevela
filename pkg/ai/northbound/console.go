@@ -808,6 +808,29 @@ const consoleHTML = `<!doctype html>
     function setValue(id, value) {
       fields[id].value = value;
     }
+    function deliveryResultJSONString() {
+      return JSON.stringify({
+        modelURI: "inline://models/" + fields.name.value + "/v1",
+        metrics: { loss: 0.12, accuracy: 0.98 },
+        summary: "trained-for-delivery"
+      });
+    }
+    function buildDeliveryJobResultScript() {
+      return [
+        "    imagePullPolicy: IfNotPresent",
+        "    cmd:",
+        "      - sh",
+        "      - -c",
+        "    args:",
+        "      - |",
+        "        echo train-start",
+        "        echo epoch=1 loss=0.30",
+        "        echo epoch=2 loss=0.12",
+        "        echo 'AI_RESULT_JSON=" + deliveryResultJSONString() + "'",
+        "        echo train-complete",
+        "    backoffLimit: 0"
+      ];
+    }
     function syncVisibility() {
       var isService = fields.kind.value === "AIService";
       Array.prototype.forEach.call(document.querySelectorAll(".service-field"), function(node) {
@@ -844,6 +867,9 @@ const consoleHTML = `<!doctype html>
       } else {
         common = common.concat([
           line("jobKind", fields.jobKind.value, 4),
+        ]);
+        common = common.concat(buildDeliveryJobResultScript());
+        common = common.concat([
           "    dataset:",
           "      name: dataset",
           line("uri", fields.datasetURI.value, 6),
