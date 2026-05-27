@@ -17,6 +17,36 @@ need() {
 need curl
 need kubectl
 
+wait_for_named_resource() {
+  local kind="$1"
+  local selector="$2"
+  local name=""
+  for _ in $(seq 1 60); do
+    name="$(kubectl get "$kind" -n "$NAMESPACE" -l "$selector" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+    if [ -n "$name" ]; then
+      echo "$name"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "timed out waiting for ${kind} with selector ${selector}" >&2
+  return 1
+}
+
+wait_for_probe() {
+  for _ in $(seq 1 30); do
+    curl -fsS -X POST "${BASE_URL}/api/v1/ai/applications/${NAMESPACE}/${SERVICE_NAME}/probe" \
+      -H "Content-Type: application/json" \
+      -d '{"path":"/healthz","timeoutSeconds":5}' | tee "$tmpdir/probe.json"
+    if grep -q '"healthy":true' "$tmpdir/probe.json"; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "timed out waiting for successful service probe" >&2
+  return 1
+}
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -69,7 +99,8 @@ curl -fsS -X POST "${BASE_URL}/api/v1/ai/applications" \
   --data-binary @"$job_yaml" >"$tmpdir/deploy.json"
 
 echo "== wait Kubernetes Job complete =="
-kubectl wait --for=condition=complete job -n "$NAMESPACE" -l "app.oam.dev/name=${JOB_NAME}" --timeout="$TIMEOUT"
+job="$(wait_for_named_resource job "app.oam.dev/name=${JOB_NAME}")"
+kubectl wait --for=condition=complete job/"$job" -n "$NAMESPACE" --timeout="$TIMEOUT"
 
 pod="$(kubectl get pod -n "$NAMESPACE" -l "app.oam.dev/name=${JOB_NAME}" -o jsonpath='{.items[0].metadata.name}')"
 echo "== pod logs ${pod} =="
@@ -86,13 +117,11 @@ curl -fsS -X POST "${BASE_URL}/api/v1/ai/deliveries/${NAMESPACE}/${JOB_NAME}/pub
   -d "{\"serviceName\":\"${SERVICE_NAME}\",\"image\":\"python:3.11-slim\",\"port\":8080,\"servicePort\":80}" | tee "$tmpdir/publish.json"
 
 echo "== wait AIService deployment ready =="
-kubectl rollout status deployment -n "$NAMESPACE" -l "app.oam.dev/name=${SERVICE_NAME}" --timeout="$TIMEOUT"
+deployment="$(wait_for_named_resource deployment "app.oam.dev/name=${SERVICE_NAME}")"
+kubectl rollout status deployment/"$deployment" -n "$NAMESPACE" --timeout="$TIMEOUT"
 
 echo "== probe AIService =="
-curl -fsS -X POST "${BASE_URL}/api/v1/ai/applications/${NAMESPACE}/${SERVICE_NAME}/probe" \
-  -H "Content-Type: application/json" \
-  -d '{"path":"/healthz","timeoutSeconds":5}' | tee "$tmpdir/probe.json"
-grep -q '"healthy":true' "$tmpdir/probe.json"
+wait_for_probe
 
 echo "== verify artifact registry =="
 curl -fsS "${BASE_URL}/api/v1/ai/artifacts?namespace=${NAMESPACE}" | tee "$tmpdir/artifacts.json"
