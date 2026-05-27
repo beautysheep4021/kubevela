@@ -14,8 +14,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" \
     -o /out/ai-northbound ./references/cmd/ai-northbound
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+FROM scratch
 COPY --from=builder /out/ai-northbound /usr/local/bin/ai-northbound
 
 USER 65532:65532
