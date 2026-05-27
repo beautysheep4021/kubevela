@@ -76,6 +76,10 @@ func TestServerServesConsolePage(t *testing.T) {
 		"应用交付",
 		"解析训练结果",
 		"发布为服务",
+		"测试服务访问",
+		"查看模型产物",
+		"/api/v1/ai/artifacts",
+		"/probe",
 		"/logs",
 		"/api/v1/ai/audits",
 		"/api/v1/ai/deliveries",
@@ -200,6 +204,38 @@ func TestServerReturnsApplicationLogs(t *testing.T) {
 	}
 	if reader.logRequest.Namespace != "sock-shop" || reader.logRequest.Name != "ai-job-demo" || reader.logRequest.Pod != "ai-job-demo-pod" || reader.logRequest.Container != "main" || reader.logRequest.TailLines != 80 {
 		t.Fatalf("unexpected log request: %#v", reader.logRequest)
+	}
+}
+
+func TestServerProbesApplicationService(t *testing.T) {
+	prober := &recordingApplicationProber{
+		result: &observe.ProbeResult{
+			Namespace:   "sock-shop",
+			Application: "delivery-service",
+			Path:        "/healthz",
+			StatusCode:  200,
+			Healthy:     true,
+			Body:        `{"status":"ok"}`,
+		},
+	}
+	server := NewServerWithOptions(Options{Prober: prober})
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/applications/sock-shop/delivery-service/probe", strings.NewReader(`{"path":"/healthz","timeoutSeconds":3}`))
+	req.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload observe.ProbeResult
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if !payload.Healthy || payload.StatusCode != 200 || payload.Body != `{"status":"ok"}` {
+		t.Fatalf("unexpected probe payload: %#v", payload)
+	}
+	if prober.request.Namespace != "sock-shop" || prober.request.Name != "delivery-service" || prober.request.Path != "/healthz" || prober.request.TimeoutSeconds != 3 {
+		t.Fatalf("unexpected probe request: %#v", prober.request)
 	}
 }
 
@@ -373,6 +409,66 @@ func TestServerPublishesDeliveryResultAsAIService(t *testing.T) {
 	}
 	if len(audits.events) != 1 || audits.events[0].Action != "publish-service" || audits.events[0].Actor != "tester" {
 		t.Fatalf("unexpected audit events: %#v", audits.events)
+	}
+}
+
+func TestServerPublishesDeliveryResultAndRecordsArtifact(t *testing.T) {
+	reader := &recordingApplicationReader{
+		logs: map[string]*observe.Logs{
+			"sock-shop/train-demo": {
+				Pod:  "train-demo-pod",
+				Logs: `AI_RESULT_JSON={"modelURI":"inline://models/train-demo/v1","metrics":{"loss":0.12},"summary":"trained"}`,
+			},
+		},
+	}
+	artifacts := &recordingArtifactStore{}
+	server := NewServerWithOptions(Options{Reader: reader, Applier: &recordingApplicationApplier{}, Artifacts: artifacts})
+	body := strings.NewReader(`{"serviceName":"train-demo-service"}`)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/deliveries/sock-shop/train-demo/publish-service", body))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if len(artifacts.saved) != 1 {
+		t.Fatalf("saved artifacts = %d, want 1", len(artifacts.saved))
+	}
+	artifact := artifacts.saved[0]
+	if artifact.Namespace != "sock-shop" || artifact.JobName != "train-demo" || artifact.ModelURI != "inline://models/train-demo/v1" {
+		t.Fatalf("unexpected artifact: %#v", artifact)
+	}
+	if len(artifact.PublishedServices) != 1 || artifact.PublishedServices[0] != "train-demo-service" {
+		t.Fatalf("unexpected published services: %#v", artifact.PublishedServices)
+	}
+}
+
+func TestServerListsArtifacts(t *testing.T) {
+	artifacts := &recordingArtifactStore{
+		list: []observe.ModelArtifact{
+			{
+				Namespace: "sock-shop",
+				Name:      "train-demo",
+				JobName:   "train-demo",
+				ModelURI:  "inline://models/train-demo/v1",
+			},
+		},
+	}
+	server := NewServerWithOptions(Options{Artifacts: artifacts})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/artifacts?namespace=sock-shop", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload observe.ArtifactList
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if len(payload.Items) != 1 || payload.Items[0].ModelURI != "inline://models/train-demo/v1" {
+		t.Fatalf("unexpected artifacts: %#v", payload)
+	}
+	if artifacts.listNamespace != "sock-shop" {
+		t.Fatalf("namespace = %q, want sock-shop", artifacts.listNamespace)
 	}
 }
 
@@ -591,6 +687,20 @@ func (r *recordingApplicationReader) GetApplicationLogs(_ context.Context, optio
 	return logs, nil
 }
 
+type recordingApplicationProber struct {
+	request observe.ProbeOptions
+	result  *observe.ProbeResult
+	err     error
+}
+
+func (p *recordingApplicationProber) ProbeApplication(_ context.Context, options observe.ProbeOptions) (*observe.ProbeResult, error) {
+	p.request = options
+	if p.err != nil {
+		return nil, p.err
+	}
+	return p.result, nil
+}
+
 type recordingApplicationManager struct {
 	deleted   string
 	restarted string
@@ -615,6 +725,22 @@ func (m *recordingApplicationManager) RerunApplication(_ context.Context, namesp
 type recordingAuditStore struct {
 	events        []observe.AuditEvent
 	listNamespace string
+}
+
+type recordingArtifactStore struct {
+	saved         []observe.ModelArtifact
+	list          []observe.ModelArtifact
+	listNamespace string
+}
+
+func (s *recordingArtifactStore) SaveArtifact(_ context.Context, artifact observe.ModelArtifact) error {
+	s.saved = append(s.saved, artifact)
+	return nil
+}
+
+func (s *recordingArtifactStore) ListArtifacts(_ context.Context, namespace string) ([]observe.ModelArtifact, error) {
+	s.listNamespace = namespace
+	return s.list, nil
 }
 
 func (s *recordingAuditStore) RecordAudit(_ context.Context, event observe.AuditEvent) error {

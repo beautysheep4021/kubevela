@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -217,6 +219,79 @@ func (c Client) GetApplicationLogs(ctx context.Context, options LogOptions) (*Lo
 	}, nil
 }
 
+func (c Client) ProbeApplication(ctx context.Context, options ProbeOptions) (*ProbeResult, error) {
+	if c.Dynamic == nil {
+		return nil, fmt.Errorf("dynamic client is required")
+	}
+	if options.Namespace == "" {
+		return nil, fmt.Errorf("namespace is required")
+	}
+	if options.Name == "" {
+		return nil, fmt.Errorf("application name is required")
+	}
+	if options.Path == "" {
+		options.Path = "/healthz"
+	}
+	if !strings.HasPrefix(options.Path, "/") {
+		options.Path = "/" + options.Path
+	}
+	if options.TimeoutSeconds <= 0 {
+		options.TimeoutSeconds = 5
+	}
+	if options.TimeoutSeconds > 30 {
+		options.TimeoutSeconds = 30
+	}
+	services, err := c.Dynamic.Resource(serviceGVR).Namespace(options.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.oam.dev/name=" + options.Name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list services for Application %s/%s: %w", options.Namespace, options.Name, err)
+	}
+	if len(services.Items) == 0 {
+		return nil, fmt.Errorf("no services found for Application %s/%s", options.Namespace, options.Name)
+	}
+	service := selectProbeService(services.Items)
+	port := firstServicePort(&service)
+	if port == 0 {
+		return nil, fmt.Errorf("service %s/%s has no ports", options.Namespace, service.GetName())
+	}
+	host := fmt.Sprintf("%s.%s.svc.cluster.local", service.GetName(), options.Namespace)
+	if clusterIP := nestedString(service.Object, "spec", "clusterIP"); clusterIP != "" && clusterIP != "None" {
+		host = clusterIP
+	}
+	target := url.URL{
+		Scheme: "http",
+		Host:   fmt.Sprintf("%s:%d", host, port),
+		Path:   options.Path,
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create probe request: %w", err)
+	}
+	client := &http.Client{Timeout: time.Duration(options.TimeoutSeconds) * time.Second}
+	response, err := client.Do(request)
+	result := &ProbeResult{
+		Namespace:   options.Namespace,
+		Application: options.Name,
+		ServiceName: service.GetName(),
+		URL:         target.String(),
+		Path:        options.Path,
+	}
+	if err != nil {
+		result.Error = err.Error()
+		return result, nil
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+	if err != nil {
+		return nil, fmt.Errorf("read probe response: %w", err)
+	}
+	result.StatusCode = response.StatusCode
+	result.Healthy = response.StatusCode >= 200 && response.StatusCode < 400
+	result.Body = string(body)
+	return result, nil
+}
+
 func (c Client) DeleteApplication(ctx context.Context, namespace, name string) (*LifecycleResult, error) {
 	if c.Dynamic == nil {
 		return nil, fmt.Errorf("dynamic client is required")
@@ -383,6 +458,104 @@ func (c Client) ListAudits(ctx context.Context, namespace string) ([]AuditEvent,
 	return items, nil
 }
 
+func (c Client) SaveArtifact(ctx context.Context, artifact ModelArtifact) error {
+	if c.Kube == nil {
+		return fmt.Errorf("kubernetes client is required for artifacts")
+	}
+	if artifact.Namespace == "" {
+		return fmt.Errorf("namespace is required")
+	}
+	if artifact.JobName == "" {
+		return fmt.Errorf("job name is required")
+	}
+	if artifact.Name == "" {
+		artifact.Name = artifact.JobName
+	}
+	if artifact.CreatedAt == "" {
+		artifact.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	content, err := json.Marshal(artifact)
+	if err != nil {
+		return fmt.Errorf("encode model artifact: %w", err)
+	}
+	name := artifactConfigMapName(artifact.Name)
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: artifact.Namespace,
+			Labels: map[string]string{
+				"ai.oam.dev/artifact": "true",
+				"ai.oam.dev/job":      artifact.JobName,
+			},
+		},
+		Data: map[string]string{"artifact.json": string(content)},
+	}
+	existing, err := c.Kube.CoreV1().ConfigMaps(artifact.Namespace).Get(ctx, name, metav1.GetOptions{})
+	if err == nil {
+		configMap.ResourceVersion = existing.ResourceVersion
+		if _, err := c.Kube.CoreV1().ConfigMaps(artifact.Namespace).Update(ctx, configMap, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("update artifact ConfigMap %s/%s: %w", artifact.Namespace, name, err)
+		}
+		return nil
+	}
+	if _, err := c.Kube.CoreV1().ConfigMaps(artifact.Namespace).Create(ctx, configMap, metav1.CreateOptions{}); err != nil {
+		return fmt.Errorf("create artifact ConfigMap %s/%s: %w", artifact.Namespace, name, err)
+	}
+	return nil
+}
+
+func (c Client) ListArtifacts(ctx context.Context, namespace string) ([]ModelArtifact, error) {
+	if c.Kube == nil {
+		return nil, fmt.Errorf("kubernetes client is required for artifacts")
+	}
+	list, err := c.Kube.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "ai.oam.dev/artifact=true",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list artifact ConfigMaps: %w", err)
+	}
+	items := make([]ModelArtifact, 0, len(list.Items))
+	for i := range list.Items {
+		raw := list.Items[i].Data["artifact.json"]
+		if raw == "" {
+			continue
+		}
+		var artifact ModelArtifact
+		if err := json.Unmarshal([]byte(raw), &artifact); err != nil {
+			continue
+		}
+		if artifact.Namespace == "" {
+			artifact.Namespace = list.Items[i].Namespace
+		}
+		items = append(items, artifact)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].CreatedAt > items[j].CreatedAt
+	})
+	return items, nil
+}
+
+func selectProbeService(services []unstructured.Unstructured) unstructured.Unstructured {
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].GetName() < services[j].GetName()
+	})
+	return services[0]
+}
+
+func firstServicePort(service *unstructured.Unstructured) int64 {
+	ports, _, _ := unstructured.NestedSlice(service.Object, "spec", "ports")
+	for _, raw := range ports {
+		portMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if port := intFromMap(portMap, "port"); port > 0 {
+			return port
+		}
+	}
+	return 0
+}
+
 func applicationListItem(app *unstructured.Unstructured) (ApplicationListItem, bool) {
 	components, workloadTypes := applicationComponents(app)
 	if len(components) == 0 {
@@ -515,6 +688,14 @@ func auditEventID(event AuditEvent) string {
 		return time.Now().UTC().Format("20060102T150405.000000000Z")
 	}
 	return base
+}
+
+func artifactConfigMapName(name string) string {
+	value := "ai-artifact-" + strings.ToLower(strings.NewReplacer("_", "-", ".", "-", ":", "-", "/", "-").Replace(name))
+	if len(value) > 63 {
+		value = value[:63]
+	}
+	return strings.Trim(value, "-")
 }
 
 func mergeRuntimeTraitMetadata(target map[string]string, app *unstructured.Unstructured) {

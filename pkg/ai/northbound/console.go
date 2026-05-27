@@ -576,8 +576,10 @@ const consoleHTML = `<!doctype html>
             <input id="delivery-service-image" value="python:3.11-slim" title="服务镜像">
             <button class="ghost" id="parse-delivery-result">解析训练结果</button>
             <button class="secondary" id="publish-delivery-service">发布为服务</button>
+            <button class="ghost" id="probe-delivery-service">测试服务访问</button>
+            <button class="ghost" id="refresh-artifacts">查看模型产物</button>
           </div>
-          <pre id="delivery-output" class="log-box">选择 AIJob 后，可解析 AI_RESULT_JSON 并发布为 AIService。接口：/api/v1/ai/deliveries</pre>
+          <pre id="delivery-output" class="log-box">选择 AIJob 后，可解析 AI_RESULT_JSON 并发布为 AIService。发布成功后可测试服务 /healthz。</pre>
           <div class="log-toolbar">
             <div class="label">生命周期操作</div>
             <button class="ghost" id="rerun-task">重新运行 Job</button>
@@ -775,6 +777,7 @@ const consoleHTML = `<!doctype html>
     var lastAction = document.getElementById("last-action");
     var selectedTask = null;
     var selectedMonitorTask = null;
+    var lastPublishedService = null;
     var logPod = document.getElementById("log-pod");
     var logContainer = document.getElementById("log-container");
     var logTail = document.getElementById("log-tail");
@@ -1057,11 +1060,65 @@ const consoleHTML = `<!doctype html>
           return data;
         });
       }).then(function(data) {
-        deliveryOutput.textContent = JSON.stringify(data, null, 2);
-        refreshTasks();
+        lastPublishedService = {namespace: data.namespace, name: data.serviceName};
+        selectedTask = lastPublishedService;
+        deliveryOutput.textContent = JSON.stringify(data, null, 2) + "\\n\\n已创建 AIService：" + data.namespace + "/" + data.serviceName + "\\n下一步：点击“测试服务访问”，验证 /healthz 是否可达。";
+        refreshTasks().then(function() {
+          return loadTaskDetail(data.namespace, data.serviceName);
+        });
         refreshAudits();
       }).catch(function(err) {
         deliveryOutput.textContent = "发布服务失败：" + err.message + "\\n\\n请先解析训练结果，确认该 AIJob 日志中存在 modelURI。";
+      });
+    }
+    function serviceTargetFromSelectionOrPublished() {
+      if (lastPublishedService) {
+        return lastPublishedService;
+      }
+      if (selectedTask) {
+        return selectedTask;
+      }
+      if (deliveryServiceName.value && fields.namespace.value) {
+        return {namespace: fields.namespace.value, name: deliveryServiceName.value};
+      }
+      return null;
+    }
+    function probeDeliveryService() {
+      var target = serviceTargetFromSelectionOrPublished();
+      if (!target) {
+        deliveryOutput.textContent = "请先发布一个 AIService，或在任务列表中选择一个 AIService。";
+        return Promise.resolve();
+      }
+      deliveryOutput.textContent = "正在测试服务访问 /healthz...";
+      return fetch("/api/v1/ai/applications/" + encodeURIComponent(target.namespace) + "/" + encodeURIComponent(target.name) + "/probe", {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-AI-User": "console"},
+        body: JSON.stringify({path: "/healthz", timeoutSeconds: 5})
+      }).then(function(res) {
+        return res.json().then(function(data) {
+          if (!res.ok) {
+            throw new Error(data.error || ("HTTP " + res.status));
+          }
+          return data;
+        });
+      }).then(function(data) {
+        deliveryOutput.textContent = JSON.stringify(data, null, 2);
+        if (data.healthy) {
+          lastAction.textContent = "服务访问正常";
+        } else {
+          lastAction.textContent = "服务访问异常";
+        }
+      }).catch(function(err) {
+        deliveryOutput.textContent = "服务访问测试失败：" + err.message + "\\n\\n请确认 AIService 已 Ready，且服务容器暴露 /healthz。";
+      });
+    }
+    function refreshArtifacts() {
+      var ns = encodeURIComponent(fields.namespace.value || "");
+      deliveryOutput.textContent = "正在读取模型产物...";
+      return fetchJSON("/api/v1/ai/artifacts?namespace=" + ns).then(function(data) {
+        deliveryOutput.textContent = JSON.stringify(data, null, 2);
+      }).catch(function(err) {
+        deliveryOutput.textContent = "模型产物读取失败：" + err.message;
       });
     }
     function lifecyclePath(target, action) {
@@ -1395,6 +1452,8 @@ const consoleHTML = `<!doctype html>
     document.getElementById("refresh-tasks").onclick = refreshTasks;
     document.getElementById("parse-delivery-result").onclick = parseDeliveryResult;
     document.getElementById("publish-delivery-service").onclick = publishDeliveryService;
+    document.getElementById("probe-delivery-service").onclick = probeDeliveryService;
+    document.getElementById("refresh-artifacts").onclick = refreshArtifacts;
     document.getElementById("delete-task").onclick = function() {
       runLifecycle(selectedTask, "delete", lastAction, function() {
         selectedTask = null;

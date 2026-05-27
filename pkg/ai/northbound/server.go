@@ -19,10 +19,12 @@ import (
 const maxRequestBodyBytes = 1 << 20
 
 type Options struct {
-	Applier domainapply.ApplicationApplier
-	Reader  ApplicationReader
-	Manager ApplicationManager
-	Audits  AuditStore
+	Applier   domainapply.ApplicationApplier
+	Reader    ApplicationReader
+	Manager   ApplicationManager
+	Prober    ApplicationProber
+	Artifacts ArtifactStore
+	Audits    AuditStore
 }
 
 type errorResponse struct {
@@ -41,9 +43,18 @@ type ApplicationManager interface {
 	RerunApplication(ctx context.Context, namespace, name string) (*observe.LifecycleResult, error)
 }
 
+type ApplicationProber interface {
+	ProbeApplication(ctx context.Context, options observe.ProbeOptions) (*observe.ProbeResult, error)
+}
+
 type AuditStore interface {
 	RecordAudit(ctx context.Context, event observe.AuditEvent) error
 	ListAudits(ctx context.Context, namespace string) ([]observe.AuditEvent, error)
+}
+
+type ArtifactStore interface {
+	SaveArtifact(ctx context.Context, artifact observe.ModelArtifact) error
+	ListArtifacts(ctx context.Context, namespace string) ([]observe.ModelArtifact, error)
 }
 
 type DeployResponse struct {
@@ -96,6 +107,7 @@ func NewServerWithOptions(options Options) http.Handler {
 	mux.HandleFunc("/api/v1/ai/applications", applications(options))
 	mux.HandleFunc("/api/v1/ai/applications/", applicationDetail(options))
 	mux.HandleFunc("/api/v1/ai/audits", audits(options.Audits))
+	mux.HandleFunc("/api/v1/ai/artifacts", artifacts(options.Artifacts))
 	mux.HandleFunc("/api/v1/ai/deliveries/", deliveries(options))
 	return mux
 }
@@ -204,6 +216,10 @@ func applicationDetail(options Options) http.HandlerFunc {
 			runLifecycleAction(options, w, r, action, namespace, name)
 			return
 		}
+		if r.Method == http.MethodPost && action == "probe" {
+			probeApplication(options.Prober, w, r, namespace, name)
+			return
+		}
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
@@ -240,7 +256,7 @@ func parseApplicationDetailPath(path string) (string, string, string, bool) {
 	rest := strings.TrimPrefix(path, "/api/v1/ai/applications/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
 	action := ""
-	if len(parts) == 3 && (parts[2] == "status" || parts[2] == "logs" || parts[2] == "restart" || parts[2] == "rerun") {
+	if len(parts) == 3 && (parts[2] == "status" || parts[2] == "logs" || parts[2] == "restart" || parts[2] == "rerun" || parts[2] == "probe") {
 		action = parts[2]
 		parts = parts[:2]
 	}
@@ -256,6 +272,36 @@ func parseApplicationDetailPath(path string) (string, string, string, bool) {
 		return "", "", "", false
 	}
 	return namespace, name, action, true
+}
+
+type probeRequest struct {
+	Path           string `json:"path"`
+	TimeoutSeconds int64  `json:"timeoutSeconds"`
+}
+
+func probeApplication(prober ApplicationProber, w http.ResponseWriter, r *http.Request, namespace, name string) {
+	if prober == nil {
+		writeError(w, http.StatusServiceUnavailable, "application prober is not configured")
+		return
+	}
+	var request probeRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)).Decode(&request); err != nil && err != io.EOF {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("decode probe request: %v", err))
+			return
+		}
+	}
+	result, err := prober.ProbeApplication(r.Context(), observe.ProbeOptions{
+		Namespace:      namespace,
+		Name:           name,
+		Path:           request.Path,
+		TimeoutSeconds: request.TimeoutSeconds,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func runLifecycleAction(options Options, w http.ResponseWriter, r *http.Request, action, namespace, name string) {
@@ -321,6 +367,25 @@ func audits(store AuditStore) http.HandlerFunc {
 	}
 }
 
+func artifacts(store ArtifactStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if store == nil {
+			writeError(w, http.StatusServiceUnavailable, "artifact store is not configured")
+			return
+		}
+		items, err := store.ListArtifacts(r.Context(), r.URL.Query().Get("namespace"))
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, observe.ArtifactList{Items: items})
+	}
+}
+
 func deliveries(options Options) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		namespace, jobName, action, ok := parseDeliveryPath(r.URL.Path)
@@ -366,8 +431,13 @@ func parseDeliveryPath(path string) (string, string, string, bool) {
 }
 
 func deliveryResultFromJobLogs(ctx context.Context, reader ApplicationReader, namespace, jobName string) (DeliveryResult, error) {
+	result, _, err := deliveryResultAndLogsFromJobLogs(ctx, reader, namespace, jobName)
+	return result, err
+}
+
+func deliveryResultAndLogsFromJobLogs(ctx context.Context, reader ApplicationReader, namespace, jobName string) (DeliveryResult, *observe.Logs, error) {
 	if reader == nil {
-		return DeliveryResult{}, fmt.Errorf("application reader is not configured")
+		return DeliveryResult{}, nil, fmt.Errorf("application reader is not configured")
 	}
 	logs, err := reader.GetApplicationLogs(ctx, observe.LogOptions{
 		Namespace: namespace,
@@ -375,9 +445,13 @@ func deliveryResultFromJobLogs(ctx context.Context, reader ApplicationReader, na
 		TailLines: 500,
 	})
 	if err != nil {
-		return DeliveryResult{}, err
+		return DeliveryResult{}, nil, err
 	}
-	return parseDeliveryResult(logs.Logs)
+	result, err := parseDeliveryResult(logs.Logs)
+	if err != nil {
+		return DeliveryResult{}, logs, err
+	}
+	return result, logs, nil
 }
 
 func parseDeliveryResult(logs string) (DeliveryResult, error) {
@@ -425,7 +499,7 @@ func publishDeliveryService(options Options, w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusServiceUnavailable, "deployment is not configured")
 		return
 	}
-	result, err := deliveryResultFromJobLogs(r.Context(), options.Reader, namespace, jobName)
+	result, logs, err := deliveryResultAndLogsFromJobLogs(r.Context(), options.Reader, namespace, jobName)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -458,6 +532,18 @@ func publishDeliveryService(options Options, w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	recordArtifact(r.Context(), options.Artifacts, observe.ModelArtifact{
+		Namespace:         namespace,
+		Name:              jobName,
+		JobName:           jobName,
+		ModelURI:          result.ModelURI,
+		Metrics:           result.Metrics,
+		Summary:           result.Summary,
+		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
+		SourcePod:         logPodName(logs),
+		SourceApplication: jobName,
+		PublishedServices: []string{request.ServiceName},
+	})
 	recordAudit(r.Context(), options.Audits, observe.AuditEvent{
 		ID:        auditID("publish-service", namespace, request.ServiceName),
 		Time:      time.Now().UTC().Format(time.RFC3339),
@@ -475,6 +561,20 @@ func publishDeliveryService(options Options, w http.ResponseWriter, r *http.Requ
 		ModelURI:    result.ModelURI,
 		Application: applied,
 	})
+}
+
+func logPodName(logs *observe.Logs) string {
+	if logs == nil {
+		return ""
+	}
+	return logs.Pod
+}
+
+func recordArtifact(ctx context.Context, store ArtifactStore, artifact observe.ModelArtifact) {
+	if store == nil {
+		return
+	}
+	_ = store.SaveArtifact(ctx, artifact)
 }
 
 func deliveryServiceYAML(namespace, jobName string, request DeliveryPublishRequest, result DeliveryResult) string {

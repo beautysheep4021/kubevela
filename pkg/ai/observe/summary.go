@@ -11,14 +11,15 @@ import (
 const aiMetadataPrefix = "ai.oam.dev/"
 
 type Summary struct {
-	Name       string             `json:"name"`
-	Namespace  string             `json:"namespace,omitempty"`
-	Phase      string             `json:"phase,omitempty"`
-	Healthy    bool               `json:"healthy"`
-	Message    string             `json:"message,omitempty"`
-	Components []ComponentSummary `json:"components,omitempty"`
-	AIMetadata map[string]string  `json:"aiMetadata,omitempty"`
-	Warnings   []Warning          `json:"warnings,omitempty"`
+	Name        string             `json:"name"`
+	Namespace   string             `json:"namespace,omitempty"`
+	Phase       string             `json:"phase,omitempty"`
+	Healthy     bool               `json:"healthy"`
+	Message     string             `json:"message,omitempty"`
+	Components  []ComponentSummary `json:"components,omitempty"`
+	AIMetadata  map[string]string  `json:"aiMetadata,omitempty"`
+	Warnings    []Warning          `json:"warnings,omitempty"`
+	Diagnostics []Diagnostic       `json:"diagnostics,omitempty"`
 }
 
 type ComponentSummary struct {
@@ -81,6 +82,42 @@ type Logs struct {
 	Pods        []LogPod `json:"pods,omitempty"`
 }
 
+type ProbeOptions struct {
+	Namespace      string
+	Name           string
+	Path           string
+	TimeoutSeconds int64
+}
+
+type ProbeResult struct {
+	Namespace   string `json:"namespace,omitempty"`
+	Application string `json:"application"`
+	ServiceName string `json:"serviceName,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Path        string `json:"path,omitempty"`
+	StatusCode  int    `json:"statusCode,omitempty"`
+	Healthy     bool   `json:"healthy"`
+	Body        string `json:"body,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+type ModelArtifact struct {
+	Namespace         string             `json:"namespace,omitempty"`
+	Name              string             `json:"name"`
+	JobName           string             `json:"jobName"`
+	ModelURI          string             `json:"modelURI"`
+	Metrics           map[string]float64 `json:"metrics,omitempty"`
+	Summary           string             `json:"summary,omitempty"`
+	CreatedAt         string             `json:"createdAt,omitempty"`
+	SourcePod         string             `json:"sourcePod,omitempty"`
+	SourceApplication string             `json:"sourceApplication,omitempty"`
+	PublishedServices []string           `json:"publishedServices,omitempty"`
+}
+
+type ArtifactList struct {
+	Items []ModelArtifact `json:"items"`
+}
+
 type LogPod struct {
 	Name       string   `json:"name"`
 	Phase      string   `json:"phase,omitempty"`
@@ -133,6 +170,14 @@ type Warning struct {
 	Message  string `json:"message"`
 }
 
+type Diagnostic struct {
+	Severity string `json:"severity"`
+	Resource string `json:"resource,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	Message  string `json:"message,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
+}
+
 // SummarizeObjects builds a readonly AI workload summary from already-fetched Kubernetes objects.
 func SummarizeObjects(objects []*unstructured.Unstructured) (*Summary, error) {
 	app := findApplication(objects)
@@ -181,6 +226,7 @@ func SummarizeObjects(objects []*unstructured.Unstructured) (*Summary, error) {
 	for _, obj := range objects {
 		mergeAIMetadata(summary.AIMetadata, obj)
 	}
+	summary.Diagnostics = summarizeDiagnostics(summary.Components)
 	sort.Slice(summary.Components, func(i, j int) bool {
 		return summary.Components[i].Name < summary.Components[j].Name
 	})
@@ -373,6 +419,80 @@ func summarizeEvents(objects []*unstructured.Unstructured, pod *unstructured.Uns
 		return events[i].LastAt < events[j].LastAt
 	})
 	return events
+}
+
+func summarizeDiagnostics(components []ComponentSummary) []Diagnostic {
+	var diagnostics []Diagnostic
+	seen := map[string]bool{}
+	for _, component := range components {
+		for _, pod := range component.Pods {
+			for _, container := range pod.Containers {
+				if container.Reason == "" {
+					continue
+				}
+				diagnostic := diagnosticForContainer(pod, container)
+				key := diagnostic.Resource + "/" + diagnostic.Reason + "/" + diagnostic.Message
+				if !seen[key] {
+					diagnostics = append(diagnostics, diagnostic)
+					seen[key] = true
+				}
+			}
+			for _, event := range pod.Events {
+				if event.Type != "Warning" && event.Reason == "" {
+					continue
+				}
+				diagnostic := Diagnostic{
+					Severity: "warning",
+					Resource: "Pod/" + pod.Name,
+					Reason:   event.Reason,
+					Message:  diagnosticMessage(event.Reason, event.Message),
+					Evidence: event.Message,
+				}
+				key := diagnostic.Resource + "/" + diagnostic.Reason + "/" + diagnostic.Message
+				if !seen[key] {
+					diagnostics = append(diagnostics, diagnostic)
+					seen[key] = true
+				}
+			}
+		}
+	}
+	return diagnostics
+}
+
+func diagnosticForContainer(pod PodSummary, container ContainerSummary) Diagnostic {
+	severity := "warning"
+	if container.State == "terminated" || strings.Contains(container.Reason, "Error") || strings.Contains(container.Reason, "BackOff") {
+		severity = "error"
+	}
+	return Diagnostic{
+		Severity: severity,
+		Resource: "Pod/" + pod.Name + "/Container/" + container.Name,
+		Reason:   container.Reason,
+		Message:  diagnosticMessage(container.Reason, container.Message),
+		Evidence: container.Message,
+	}
+}
+
+func diagnosticMessage(reason, fallback string) string {
+	switch reason {
+	case "ImagePullBackOff", "ErrImagePull":
+		return "镜像拉取失败，请检查 image 地址、镜像仓库权限和节点网络。"
+	case "CrashLoopBackOff":
+		return "容器反复崩溃，请查看启动日志和命令参数。"
+	case "CreateContainerConfigError":
+		return "容器配置创建失败，请检查环境变量、ConfigMap、Secret 或挂载配置。"
+	case "FailedScheduling":
+		return "调度失败，请检查节点资源、nodeSelector、taints/tolerations 或 GPU 请求。"
+	case "OOMKilled":
+		return "容器因内存不足被终止，请提高内存限制或降低任务内存占用。"
+	case "BackoffLimitExceeded":
+		return "Job 重试次数已耗尽，请查看失败 Pod 日志。"
+	default:
+		if fallback != "" {
+			return fallback
+		}
+		return reason
+	}
 }
 
 func eventLastAt(obj *unstructured.Unstructured) string {

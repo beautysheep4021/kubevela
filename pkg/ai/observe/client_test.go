@@ -1,11 +1,13 @@
 package observe
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 func TestSelectLogPodUsesNewestPodByDefault(t *testing.T) {
@@ -69,6 +71,27 @@ func TestAuditConfigMapNameIsBounded(t *testing.T) {
 	}
 	if !strings.HasPrefix(name, "ai-audit-") {
 		t.Fatalf("name = %q, want ai-audit prefix", name)
+	}
+}
+
+func TestClientSavesAndListsArtifacts(t *testing.T) {
+	client := Client{Kube: fake.NewSimpleClientset()}
+
+	if err := client.SaveArtifact(context.Background(), ModelArtifact{
+		Namespace:         "sock-shop",
+		Name:              "train-demo",
+		JobName:           "train-demo",
+		ModelURI:          "inline://models/train-demo/v1",
+		PublishedServices: []string{"train-demo-service"},
+	}); err != nil {
+		t.Fatalf("save artifact: %v", err)
+	}
+	items, err := client.ListArtifacts(context.Background(), "sock-shop")
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if len(items) != 1 || items[0].ModelURI != "inline://models/train-demo/v1" || items[0].PublishedServices[0] != "train-demo-service" {
+		t.Fatalf("unexpected artifacts: %#v", items)
 	}
 }
 
