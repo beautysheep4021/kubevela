@@ -106,6 +106,13 @@ type ModelArtifact struct {
 	Name              string             `json:"name"`
 	JobName           string             `json:"jobName"`
 	ModelURI          string             `json:"modelURI"`
+	Version           string             `json:"version,omitempty"`
+	BaseModelURI      string             `json:"baseModelURI,omitempty"`
+	DatasetURI        string             `json:"datasetURI,omitempty"`
+	Status            string             `json:"status,omitempty"`
+	Visibility        string             `json:"visibility,omitempty"`
+	EvaluationStatus  string             `json:"evaluationStatus,omitempty"`
+	Owner             string             `json:"owner,omitempty"`
 	Metrics           map[string]float64 `json:"metrics,omitempty"`
 	Summary           string             `json:"summary,omitempty"`
 	CreatedAt         string             `json:"createdAt,omitempty"`

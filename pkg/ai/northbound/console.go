@@ -724,6 +724,14 @@ const consoleHTML = `<!doctype html>
           </div>
           <pre id="delivery-output" class="log-box">选择 AIJob 后，可解析 AI_RESULT_JSON 并发布为 AIService。发布成功后可测试服务 /healthz。</pre>
           <div class="log-toolbar">
+            <div class="label">我的模型 · 模型资产库</div>
+            <button class="ghost" id="refresh-models">刷新我的模型</button>
+            <button class="secondary" id="register-model">登记模型</button>
+          </div>
+          <div id="model-list" class="task-list">
+            <div class="empty">训练完成后可登记模型资产；已登记模型可以“设为基础模型”继续训练，或“发布此模型”生成服务模板。</div>
+          </div>
+          <div class="log-toolbar">
             <div class="label">生命周期操作</div>
             <button class="ghost" id="rerun-task">重新运行 Job</button>
             <button class="ghost" id="restart-task">重启服务</button>
@@ -917,10 +925,12 @@ const consoleHTML = `<!doctype html>
     var output = document.getElementById("output");
     var cards = document.getElementById("cards");
     var taskList = document.getElementById("task-list");
+    var modelList = document.getElementById("model-list");
     var lastAction = document.getElementById("last-action");
     var selectedTask = null;
     var selectedMonitorTask = null;
     var lastPublishedService = null;
+    var lastDeliveryResult = null;
     var logPod = document.getElementById("log-pod");
     var logContainer = document.getElementById("log-container");
     var logTail = document.getElementById("log-tail");
@@ -967,7 +977,15 @@ const consoleHTML = `<!doctype html>
     function modelNameFromURI(uri) {
       var clean = (uri || "model").split("?")[0].replace(/\/+$/g, "");
       var parts = clean.split("/");
-      return slug(parts[parts.length - 1] || "model");
+      var name = parts[parts.length - 1] || "model";
+      if (looksLikeModelVersion(name) && parts.length > 1) {
+        name = parts[parts.length - 2] || name;
+      }
+      return slug(name);
+    }
+    function looksLikeModelVersion(value) {
+      value = (value || "").toLowerCase();
+      return value === "latest" || /^v[0-9]+$/.test(value);
     }
     function setActiveTemplate(template) {
       Array.prototype.forEach.call(document.querySelectorAll(".template-card"), function(node) {
@@ -1254,6 +1272,7 @@ const consoleHTML = `<!doctype html>
       }
       deliveryOutput.textContent = "正在解析训练结果...";
       return fetchJSON(deliveryBase(target) + "/result").then(function(data) {
+        lastDeliveryResult = data.result || null;
         deliveryOutput.textContent = JSON.stringify(data, null, 2);
         if (!deliveryServiceName.value) {
           deliveryServiceName.value = target.name + "-service";
@@ -1346,6 +1365,94 @@ const consoleHTML = `<!doctype html>
         deliveryOutput.textContent = JSON.stringify(data, null, 2);
       }).catch(function(err) {
         deliveryOutput.textContent = "模型产物读取失败：" + err.message;
+      });
+    }
+    function renderModels(items) {
+      modelList.innerHTML = "";
+      if (!items || !items.length) {
+        var empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "暂无模型资产。训练完成后点击“解析训练结果”，再点击“登记模型”。";
+        modelList.appendChild(empty);
+        return;
+      }
+      items.forEach(function(item) {
+        var row = document.createElement("div");
+        row.className = "task-row";
+        var name = (item.namespace || fields.namespace.value || "-") + "/" + (item.name || "-");
+        row.innerHTML = [
+          "<strong>" + name + "</strong>",
+          "<span title=\"" + (item.modelURI || "") + "\">" + (item.modelURI || "-") + "</span>",
+          "<span>" + (item.evaluationStatus || "pending") + "</span>",
+          "<span>" + (item.status || "trained") + " · " + (item.visibility || "private") + "</span>",
+          "<span><button class=\"ghost use-model\" type=\"button\">设为基础模型</button> <button class=\"secondary serve-model\" type=\"button\">发布此模型</button></span>"
+        ].join("");
+        row.querySelector(".use-model").onclick = function() {
+          setWizardValue("algorithmTemplate", "sft");
+          setWizardValue("baseModelURI", item.modelURI || "");
+          setWizardValue("taskDisplayName", (item.name || "model") + "-sft");
+          generateYAML(true);
+          lastAction.textContent = "已将模型设为基础模型";
+        };
+        row.querySelector(".serve-model").onclick = function() {
+          setWizardValue("algorithmTemplate", "service");
+          setWizardValue("serviceModelURI", item.modelURI || "");
+          setWizardValue("taskDisplayName", (item.name || "model") + "-service");
+          generateYAML(true);
+          lastAction.textContent = "已载入发布此模型模板";
+        };
+        modelList.appendChild(row);
+      });
+    }
+    function refreshModels() {
+      var ns = encodeURIComponent(fields.namespace.value || "");
+      modelList.innerHTML = "<div class=\"empty\">正在读取模型资产库...</div>";
+      return fetchJSON("/api/v1/ai/models?namespace=" + ns).then(function(data) {
+        renderModels(data.items || []);
+      }).catch(function(err) {
+        modelList.innerHTML = "<div class=\"empty\">模型资产读取失败：" + err.message + "</div>";
+      });
+    }
+    function registerModelAsset() {
+      var target = deliveryTargetFromSelectionOrForm();
+      var result = lastDeliveryResult || {};
+      var modelURI = result.modelURI || "";
+      if (!modelURI && fields.kind.value === "AIService") {
+        modelURI = fields.modelURI.value || wizardFields.serviceModelURI.value;
+      }
+      if (!modelURI) {
+        deliveryOutput.textContent = "请先解析训练结果，或在高级配置中填写 modelURI 后再登记模型。";
+        return Promise.resolve();
+      }
+      var payload = {
+        namespace: fields.namespace.value || "default",
+        name: modelNameFromURI(modelURI),
+        jobName: target ? target.name : modelNameFromURI(modelURI),
+        modelURI: modelURI,
+        baseModelURI: wizardFields.baseModelURI.value || "",
+        datasetURI: wizardFields.trainingDataURI.value || fields.datasetURI.value || "",
+        status: "trained",
+        visibility: "private",
+        evaluationStatus: result.metrics ? "passed" : "pending",
+        metrics: result.metrics || undefined,
+        summary: result.summary || ""
+      };
+      return fetch("/api/v1/ai/models", {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-AI-User": "console"},
+        body: JSON.stringify(payload)
+      }).then(function(res) {
+        return res.json().then(function(data) {
+          if (!res.ok) {
+            throw new Error(data.error || ("HTTP " + res.status));
+          }
+          return data;
+        });
+      }).then(function(data) {
+        deliveryOutput.textContent = JSON.stringify(data, null, 2) + "\\n\\n模型资产已登记，可在“我的模型”中继续训练或发布。";
+        return refreshModels();
+      }).catch(function(err) {
+        deliveryOutput.textContent = "模型登记失败：" + err.message;
       });
     }
     function lifecyclePath(target, action) {
@@ -1709,6 +1816,8 @@ const consoleHTML = `<!doctype html>
     document.getElementById("publish-delivery-service").onclick = publishDeliveryService;
     document.getElementById("probe-delivery-service").onclick = probeDeliveryService;
     document.getElementById("refresh-artifacts").onclick = refreshArtifacts;
+    document.getElementById("refresh-models").onclick = refreshModels;
+    document.getElementById("register-model").onclick = registerModelAsset;
     document.getElementById("delete-task").onclick = function() {
       runLifecycle(selectedTask, "delete", lastAction, function() {
         selectedTask = null;

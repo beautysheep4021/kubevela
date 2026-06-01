@@ -85,7 +85,13 @@ func TestServerServesConsolePage(t *testing.T) {
 		"发布为服务",
 		"测试服务访问",
 		"查看模型产物",
+		"我的模型",
+		"模型资产库",
+		"登记模型",
+		"设为基础模型",
+		"发布此模型",
 		"/api/v1/ai/artifacts",
+		"/api/v1/ai/models",
 		"/probe",
 		"/logs",
 		"/api/v1/ai/audits",
@@ -106,6 +112,7 @@ func TestConsoleGeneratedAIJobIncludesDeliveryResultMarker(t *testing.T) {
 		"inline://models/\" + fields.name.value + \"/v1",
 		"echo training_size=",
 		"line(\"trainingSize\", wizardFields.trainingSize.value, 4)",
+		"function looksLikeModelVersion",
 	} {
 		if !strings.Contains(consoleHTML, expected) {
 			t.Fatalf("console AIJob generator missing %q", expected)
@@ -449,6 +456,9 @@ func TestServerPublishesDeliveryResultAndRecordsArtifact(t *testing.T) {
 	if len(artifact.PublishedServices) != 1 || artifact.PublishedServices[0] != "train-demo-service" {
 		t.Fatalf("unexpected published services: %#v", artifact.PublishedServices)
 	}
+	if artifact.Status != "published" || artifact.Visibility != "private" || artifact.EvaluationStatus != "passed" {
+		t.Fatalf("unexpected artifact lifecycle fields: %#v", artifact)
+	}
 }
 
 func TestServerListsArtifacts(t *testing.T) {
@@ -478,6 +488,91 @@ func TestServerListsArtifacts(t *testing.T) {
 	}
 	if artifacts.listNamespace != "sock-shop" {
 		t.Fatalf("namespace = %q, want sock-shop", artifacts.listNamespace)
+	}
+}
+
+func TestServerListsModelAssets(t *testing.T) {
+	artifacts := &recordingArtifactStore{
+		list: []observe.ModelArtifact{
+			{
+				Namespace:        "sock-shop",
+				Name:             "customer-sft-demo",
+				ModelURI:         "inline://models/customer-sft-demo/v1",
+				Status:           "evaluated",
+				Visibility:       "private",
+				EvaluationStatus: "passed",
+			},
+		},
+	}
+	server := NewServerWithOptions(Options{Artifacts: artifacts})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/models?namespace=sock-shop", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload observe.ArtifactList
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if len(payload.Items) != 1 || payload.Items[0].Name != "customer-sft-demo" || payload.Items[0].Visibility != "private" {
+		t.Fatalf("unexpected model assets: %#v", payload)
+	}
+	if artifacts.listNamespace != "sock-shop" {
+		t.Fatalf("namespace = %q, want sock-shop", artifacts.listNamespace)
+	}
+}
+
+func TestServerRegistersModelAsset(t *testing.T) {
+	artifacts := &recordingArtifactStore{}
+	server := NewServerWithOptions(Options{Artifacts: artifacts})
+	body := strings.NewReader(`{
+		"namespace": "sock-shop",
+		"name": "customer-sft-demo",
+		"jobName": "customer-sft-demo",
+		"modelURI": "inline://models/customer-sft-demo/v1",
+		"baseModelURI": "modelscope://qwen/Qwen2.5-0.5B",
+		"datasetURI": "inline://datasets/customer-sft-demo",
+		"status": "trained",
+		"visibility": "private",
+		"evaluationStatus": "pending"
+	}`)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/models", body))
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	if len(artifacts.saved) != 1 {
+		t.Fatalf("saved artifacts = %d, want 1", len(artifacts.saved))
+	}
+	asset := artifacts.saved[0]
+	if asset.Namespace != "sock-shop" || asset.Name != "customer-sft-demo" || asset.ModelURI != "inline://models/customer-sft-demo/v1" {
+		t.Fatalf("unexpected saved model asset: %#v", asset)
+	}
+	if asset.BaseModelURI != "modelscope://qwen/Qwen2.5-0.5B" || asset.DatasetURI != "inline://datasets/customer-sft-demo" {
+		t.Fatalf("unexpected model lineage: %#v", asset)
+	}
+	if asset.Visibility != "private" || asset.Status != "trained" || asset.EvaluationStatus != "pending" {
+		t.Fatalf("unexpected model lifecycle fields: %#v", asset)
+	}
+}
+
+func TestServerRegistersModelAssetDerivesNameFromVersionedURI(t *testing.T) {
+	artifacts := &recordingArtifactStore{}
+	server := NewServerWithOptions(Options{Artifacts: artifacts})
+	body := strings.NewReader(`{
+		"namespace": "sock-shop",
+		"modelURI": "inline://models/customer-sft-demo/v1"
+	}`)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/models", body))
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	if len(artifacts.saved) != 1 || artifacts.saved[0].Name != "customer-sft-demo" {
+		t.Fatalf("unexpected derived model asset: %#v", artifacts.saved)
 	}
 }
 

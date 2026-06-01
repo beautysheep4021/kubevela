@@ -108,6 +108,7 @@ func NewServerWithOptions(options Options) http.Handler {
 	mux.HandleFunc("/api/v1/ai/applications/", applicationDetail(options))
 	mux.HandleFunc("/api/v1/ai/audits", audits(options.Audits))
 	mux.HandleFunc("/api/v1/ai/artifacts", artifacts(options.Artifacts))
+	mux.HandleFunc("/api/v1/ai/models", models(options.Artifacts))
 	mux.HandleFunc("/api/v1/ai/deliveries/", deliveries(options))
 	return mux
 }
@@ -386,6 +387,103 @@ func artifacts(store ArtifactStore) http.HandlerFunc {
 	}
 }
 
+func models(store ArtifactStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if store == nil {
+			writeError(w, http.StatusServiceUnavailable, "model asset store is not configured")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			items, err := store.ListArtifacts(r.Context(), r.URL.Query().Get("namespace"))
+			if err != nil {
+				writeError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, observe.ArtifactList{Items: items})
+		case http.MethodPost:
+			var asset observe.ModelArtifact
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)).Decode(&asset); err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("decode model asset request: %v", err))
+				return
+			}
+			if asset.Namespace == "" {
+				writeError(w, http.StatusBadRequest, "namespace is required")
+				return
+			}
+			if asset.ModelURI == "" {
+				writeError(w, http.StatusBadRequest, "modelURI is required")
+				return
+			}
+			if asset.Name == "" {
+				asset.Name = modelAssetNameFromURI(asset.ModelURI)
+			}
+			if asset.JobName == "" {
+				asset.JobName = asset.Name
+			}
+			if asset.Status == "" {
+				asset.Status = "trained"
+			}
+			if asset.Visibility == "" {
+				asset.Visibility = "private"
+			}
+			if asset.EvaluationStatus == "" {
+				asset.EvaluationStatus = "pending"
+			}
+			if asset.Owner == "" {
+				asset.Owner = actorFromRequest(r)
+			}
+			if asset.CreatedAt == "" {
+				asset.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+			}
+			if err := store.SaveArtifact(r.Context(), asset); err != nil {
+				writeError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusCreated, asset)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	}
+}
+
+func modelAssetNameFromURI(modelURI string) string {
+	clean := strings.TrimRight(strings.Split(modelURI, "?")[0], "/")
+	parts := strings.Split(clean, "/")
+	name := "model"
+	if len(parts) > 0 && strings.TrimSpace(parts[len(parts)-1]) != "" {
+		name = parts[len(parts)-1]
+	}
+	if looksLikeModelVersion(name) && len(parts) > 1 && strings.TrimSpace(parts[len(parts)-2]) != "" {
+		name = parts[len(parts)-2]
+	}
+	name = strings.ToLower(strings.NewReplacer("_", "-", ".", "-", ":", "-", "/", "-").Replace(name))
+	name = strings.Trim(name, "-")
+	if name == "" {
+		return "model"
+	}
+	if len(name) > 50 {
+		name = name[:50]
+	}
+	return name
+}
+
+func looksLikeModelVersion(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "latest" {
+		return true
+	}
+	if len(value) < 2 || value[0] != 'v' {
+		return false
+	}
+	for _, char := range value[1:] {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func deliveries(options Options) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		namespace, jobName, action, ok := parseDeliveryPath(r.URL.Path)
@@ -537,6 +635,10 @@ func publishDeliveryService(options Options, w http.ResponseWriter, r *http.Requ
 		Name:              jobName,
 		JobName:           jobName,
 		ModelURI:          result.ModelURI,
+		Status:            "published",
+		Visibility:        "private",
+		EvaluationStatus:  evaluationStatus(result),
+		Owner:             actorFromRequest(r),
 		Metrics:           result.Metrics,
 		Summary:           result.Summary,
 		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
@@ -561,6 +663,13 @@ func publishDeliveryService(options Options, w http.ResponseWriter, r *http.Requ
 		ModelURI:    result.ModelURI,
 		Application: applied,
 	})
+}
+
+func evaluationStatus(result DeliveryResult) string {
+	if len(result.Metrics) > 0 {
+		return "passed"
+	}
+	return "pending"
 }
 
 func logPodName(logs *observe.Logs) string {
