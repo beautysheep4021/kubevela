@@ -156,6 +156,74 @@ const consoleHTML = `<!doctype html>
       font-size: 12px;
       font-weight: 900;
     }
+    .template-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      padding: 16px 18px 2px;
+    }
+    .template-card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 14px;
+      color: var(--ink);
+      background: rgba(255,255,255,.72);
+      text-align: left;
+      cursor: pointer;
+      min-height: 112px;
+    }
+    .template-card.active {
+      border-color: rgba(47, 95, 116, .62);
+      background: linear-gradient(135deg, rgba(47, 95, 116, .14), rgba(232, 236, 223, .82));
+      box-shadow: inset 0 0 0 1px rgba(47, 95, 116, .18);
+    }
+    .template-card strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 15px;
+    }
+    .template-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .wizard-steps {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      padding: 14px 18px 0;
+    }
+    .wizard-step {
+      border-radius: 999px;
+      padding: 8px 10px;
+      color: var(--muted);
+      background: rgba(255,255,255,.62);
+      border: 1px solid var(--line);
+      font-size: 12px;
+      font-weight: 900;
+      text-align: center;
+    }
+    .wizard-step.active {
+      color: #fffaf0;
+      background: var(--steel);
+    }
+    details.advanced-config {
+      margin: 10px 18px 14px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255,255,255,.42);
+      overflow: hidden;
+    }
+    details.advanced-config summary {
+      cursor: pointer;
+      padding: 13px 14px;
+      font-weight: 900;
+      color: var(--ink);
+    }
+    details.advanced-config .form-grid {
+      padding-top: 6px;
+    }
     .form-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -395,6 +463,8 @@ const consoleHTML = `<!doctype html>
       .hero, .workspace { grid-template-columns: 1fr; }
       .monitor-grid { grid-template-columns: 1fr; }
       .status-strip { grid-template-columns: 1fr; }
+      .template-strip { grid-template-columns: 1fr; }
+      .wizard-steps { grid-template-columns: 1fr 1fr; }
       .form-grid, .filter-grid { grid-template-columns: 1fr; }
       .panel { min-height: auto; border-radius: 24px; }
       textarea { min-height: 430px; }
@@ -435,17 +505,89 @@ const consoleHTML = `<!doctype html>
     <section class="workspace">
       <section class="panel">
         <div class="panel-head">
-          <h2 class="panel-title">提交意图</h2>
+          <h2 class="panel-title">训练向导</h2>
           <div class="actions">
-            <button class="ghost" id="load-service">载入 AIService</button>
-            <button class="ghost" id="load-job">载入 AIJob</button>
+            <button class="ghost" id="load-service">发布已有模型</button>
+            <button class="ghost" id="load-job">载入训练模板</button>
             <button class="ghost" id="generate">生成 YAML</button>
             <button class="secondary" id="validate">校验</button>
             <button id="normalize">归一化</button>
             <button id="deploy">提交部署</button>
           </div>
         </div>
+        <div class="template-strip" aria-label="算法任务模板">
+          <button class="template-card active" id="template-sft" type="button">
+            <strong>SFT 微调</strong>
+            <span>选择基础模型和训练数据，提交一次监督微调任务，完成后可发布为服务。</span>
+          </button>
+          <button class="template-card" id="template-eval" type="button">
+            <strong>模型评测</strong>
+            <span>用评测集验证模型效果，输出指标和评估结果，适合上线前检查。</span>
+          </button>
+          <button class="template-card" id="template-service" type="button">
+            <strong>发布服务</strong>
+            <span>已有 modelURI 时直接发布为在线服务，并通过 /healthz 做访问测试。</span>
+          </button>
+        </div>
+        <div class="wizard-steps">
+          <div class="wizard-step active">1 选择算法</div>
+          <div class="wizard-step active">2 填写模型与数据</div>
+          <div class="wizard-step">3 提交训练</div>
+          <div class="wizard-step">4 发布与测试</div>
+        </div>
         <div class="form-grid">
+          <div class="subhead">算法任务模板</div>
+          <div class="field">
+            <label for="algorithmTemplate">算法类型</label>
+            <select id="algorithmTemplate">
+              <option value="sft">SFT 微调</option>
+              <option value="evaluation">模型评测</option>
+              <option value="service">发布已有模型</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="taskDisplayName">任务名称</label>
+            <input id="taskDisplayName" value="customer-sft-demo">
+          </div>
+          <div class="field wide train-field">
+            <label for="baseModelURI">基础模型 URI</label>
+            <input id="baseModelURI" value="modelscope://qwen/Qwen2.5-0.5B">
+          </div>
+          <div class="field wide train-field">
+            <label for="trainingDataURI">训练数据 URI</label>
+            <input id="trainingDataURI" value="inline://datasets/customer-sft-demo">
+          </div>
+          <div class="field train-field">
+            <label for="trainingSize">训练规格</label>
+            <select id="trainingSize">
+              <option value="small">小规格 CPU PoC</option>
+              <option value="medium">中规格 单卡</option>
+              <option value="large">大规格 多卡</option>
+            </select>
+          </div>
+          <div class="field train-field">
+            <label for="publishAfterTrain">训练完成后</label>
+            <select id="publishAfterTrain">
+              <option value="true">训练完成后自动发布为服务</option>
+              <option value="false">仅保存模型产物</option>
+            </select>
+          </div>
+          <div class="field train-field">
+            <label for="epochs">Epoch</label>
+            <input id="epochs" value="1">
+          </div>
+          <div class="field train-field">
+            <label for="learningRate">Learning Rate</label>
+            <input id="learningRate" value="2e-5">
+          </div>
+          <div class="field service-template-field wide">
+            <label for="serviceModelURI">待发布模型 URI</label>
+            <input id="serviceModelURI" value="inline://models/customer-sft-demo/v1">
+          </div>
+        </div>
+        <details class="advanced-config">
+          <summary>高级配置：查看和调整底层 AIJob / AIService 字段</summary>
+          <div class="form-grid">
           <div class="field">
             <label for="kind">任务类型</label>
             <select id="kind">
@@ -543,7 +685,8 @@ const consoleHTML = `<!doctype html>
             <label for="outputURI">输出 URI</label>
             <input id="outputURI" value="oss://outputs/eval-run/v1">
           </div>
-        </div>
+          </div>
+        </details>
         <div class="yaml-preview">
           <span class="label">领域 YAML</span>
           <textarea id="yaml" spellcheck="false"></textarea>
@@ -799,6 +942,10 @@ const consoleHTML = `<!doctype html>
     ["monitorNamespace", "monitorType", "monitorTenant", "monitorProject", "monitorEnvironment", "monitorHealth"].forEach(function(id) {
       monitorFields[id] = document.getElementById(id);
     });
+    var wizardFields = {};
+    ["algorithmTemplate", "taskDisplayName", "baseModelURI", "trainingDataURI", "trainingSize", "publishAfterTrain", "epochs", "learningRate", "serviceModelURI"].forEach(function(id) {
+      wizardFields[id] = document.getElementById(id);
+    });
     var fields = {};
     ["kind", "name", "namespace", "component", "tenant", "project", "environment", "owner", "runtime", "image", "modelName", "modelVersion", "modelURI", "replicas", "port", "jobKind", "ttl", "datasetURI", "outputURI"].forEach(function(id) {
       fields[id] = document.getElementById(id);
@@ -811,11 +958,74 @@ const consoleHTML = `<!doctype html>
     function setValue(id, value) {
       fields[id].value = value;
     }
+    function setWizardValue(id, value) {
+      wizardFields[id].value = value;
+    }
+    function slug(value) {
+      return (value || "ai-task").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "ai-task";
+    }
+    function modelNameFromURI(uri) {
+      var clean = (uri || "model").split("?")[0].replace(/\/+$/g, "");
+      var parts = clean.split("/");
+      return slug(parts[parts.length - 1] || "model");
+    }
+    function setActiveTemplate(template) {
+      Array.prototype.forEach.call(document.querySelectorAll(".template-card"), function(node) {
+        node.classList.remove("active");
+      });
+      var active = document.getElementById("template-" + (template === "evaluation" ? "eval" : template === "service" ? "service" : "sft"));
+      if (active) active.classList.add("active");
+      Array.prototype.forEach.call(document.querySelectorAll(".train-field"), function(node) {
+        node.style.display = template === "service" ? "none" : "grid";
+      });
+      Array.prototype.forEach.call(document.querySelectorAll(".service-template-field"), function(node) {
+        node.style.display = template === "service" ? "grid" : "none";
+      });
+    }
+    function applyWizardToAdvanced() {
+      var template = wizardFields.algorithmTemplate.value;
+      var taskName = slug(wizardFields.taskDisplayName.value);
+      setActiveTemplate(template);
+      if (template === "service") {
+        setValue("kind", "AIService");
+        setValue("name", taskName || "model-service-demo");
+        setValue("namespace", fields.namespace.value || "sock-shop");
+        setValue("component", taskName || "model-service");
+        setValue("tenant", fields.tenant.value || "demo-tenant");
+        setValue("project", fields.project.value || "model-serving");
+        setValue("environment", fields.environment.value || "poc");
+        setValue("owner", fields.owner.value || "ai-platform");
+        setValue("runtime", "http");
+        setValue("image", "python:3.11-slim");
+        setValue("modelName", modelNameFromURI(wizardFields.serviceModelURI.value));
+        setValue("modelVersion", "v1");
+        setValue("modelURI", wizardFields.serviceModelURI.value);
+        setValue("replicas", "1");
+        setValue("port", "8080");
+        return;
+      }
+      var project = template === "evaluation" ? "model-evaluation" : "sft-training";
+      setValue("kind", "AIJob");
+      setValue("name", taskName || "customer-sft-demo");
+      setValue("namespace", fields.namespace.value || "sock-shop");
+      setValue("component", taskName ? taskName + "-trainer" : "sft-trainer");
+      setValue("tenant", fields.tenant.value || "demo-tenant");
+      setValue("project", project);
+      setValue("environment", fields.environment.value || "poc");
+      setValue("owner", fields.owner.value || "ai-platform");
+      setValue("runtime", "batch");
+      setValue("image", "busybox:1.36");
+      setValue("jobKind", template === "evaluation" ? "evaluation" : "training");
+      setValue("ttl", "3600");
+      setValue("datasetURI", wizardFields.trainingDataURI.value);
+      setValue("outputURI", "inline://outputs/" + (taskName || "customer-sft-demo"));
+      deliveryServiceName.value = (taskName || "customer-sft-demo") + "-service";
+    }
     function deliveryResultJSONString() {
       return JSON.stringify({
         modelURI: "inline://models/" + fields.name.value + "/v1",
         metrics: { loss: 0.12, accuracy: 0.98 },
-        summary: "trained-for-delivery"
+        summary: (wizardFields.algorithmTemplate && wizardFields.algorithmTemplate.value === "sft") ? "sft-fine-tuned" : "trained-for-delivery"
       });
     }
     function buildDeliveryJobResultScript() {
@@ -826,6 +1036,11 @@ const consoleHTML = `<!doctype html>
         "      - -c",
         "    args:",
         "      - |",
+        "        echo algorithm=" + (wizardFields.algorithmTemplate ? wizardFields.algorithmTemplate.value : "training"),
+        "        echo base_model=" + (wizardFields.baseModelURI ? wizardFields.baseModelURI.value : "inline://models/base"),
+        "        echo dataset=" + fields.datasetURI.value,
+        "        echo training_size=" + (wizardFields.trainingSize ? wizardFields.trainingSize.value : "small"),
+        "        echo epochs=" + (wizardFields.epochs ? wizardFields.epochs.value : "1") + " learning_rate=" + (wizardFields.learningRate ? wizardFields.learningRate.value : "2e-5"),
         "        echo train-start",
         "        echo epoch=1 loss=0.30",
         "        echo epoch=2 loss=0.12",
@@ -894,14 +1109,21 @@ const consoleHTML = `<!doctype html>
         common.push(line("modelURI", fields.modelURI.value, 4));
       } else {
         common.push(line("datasetURI", fields.datasetURI.value, 4));
+        common.push(line("trainingSize", wizardFields.trainingSize.value, 4));
       }
       return common.join("\n") + "\n";
     }
-    function generateYAML() {
+    function generateYAML(applyWizard) {
+      if (applyWizard !== false) {
+        applyWizardToAdvanced();
+      }
       syncVisibility();
       yaml.value = buildYAML();
     }
     function fillServiceForm() {
+      setWizardValue("algorithmTemplate", "service");
+      setWizardValue("taskDisplayName", "sentiment-demo");
+      setWizardValue("serviceModelURI", "oss://models/sentiment/v1");
       setValue("kind", "AIService");
       setValue("name", "sentiment-demo");
       setValue("namespace", "ai-demo");
@@ -920,20 +1142,25 @@ const consoleHTML = `<!doctype html>
       generateYAML();
     }
     function fillJobForm() {
+      setWizardValue("algorithmTemplate", "sft");
+      setWizardValue("taskDisplayName", "customer-sft-demo");
+      setWizardValue("baseModelURI", "modelscope://qwen/Qwen2.5-0.5B");
+      setWizardValue("trainingDataURI", "inline://datasets/customer-sft-demo");
+      setWizardValue("publishAfterTrain", "true");
       setValue("kind", "AIJob");
-      setValue("name", "delivery-train-demo");
+      setValue("name", "customer-sft-demo");
       setValue("namespace", "sock-shop");
-      setValue("component", "delivery-trainer");
+      setValue("component", "customer-sft-demo-trainer");
       setValue("tenant", "demo-tenant");
-      setValue("project", "delivery-demo");
+      setValue("project", "sft-training");
       setValue("environment", "poc");
       setValue("owner", "ai-platform");
       setValue("runtime", "batch");
       setValue("image", "busybox:1.36");
       setValue("jobKind", "training");
       setValue("ttl", "3600");
-      setValue("datasetURI", "inline://datasets/tiny-delivery");
-      setValue("outputURI", "inline://outputs/delivery-demo");
+      setValue("datasetURI", "inline://datasets/customer-sft-demo");
+      setValue("outputURI", "inline://outputs/customer-sft-demo");
       generateYAML();
     }
 
@@ -1222,7 +1449,7 @@ const consoleHTML = `<!doctype html>
     }
     function post(path) {
       lastAction.textContent = "处理中";
-      generateYAML();
+      generateYAML(false);
       return fetch(path, {
         method: "POST",
         headers: {"Content-Type": "application/yaml"},
@@ -1406,16 +1633,44 @@ const consoleHTML = `<!doctype html>
       fillJobForm();
       selectedTask = null;
       deliveryServiceName.value = "";
-      deliveryOutput.textContent = "已载入可交付 AIJob 样例。下一步：取消 DryRun 后点击“提交部署”，等待 Job 完成，再点击“解析训练结果”。";
-      lastAction.textContent = "已载入可交付任务样例";
+      deliveryOutput.textContent = "已载入 SFT 微调模板。下一步：确认基础模型和训练数据，取消 DryRun 后点击“提交部署”。";
+      lastAction.textContent = "已载入 SFT 微调模板";
+    };
+    document.getElementById("template-sft").onclick = function() {
+      setWizardValue("algorithmTemplate", "sft");
+      if (!wizardFields.taskDisplayName.value || wizardFields.taskDisplayName.value === "sentiment-demo") {
+        setWizardValue("taskDisplayName", "customer-sft-demo");
+      }
+      generateYAML();
+      lastAction.textContent = "已选择 SFT 微调";
+    };
+    document.getElementById("template-eval").onclick = function() {
+      setWizardValue("algorithmTemplate", "evaluation");
+      if (!wizardFields.taskDisplayName.value || wizardFields.taskDisplayName.value === "customer-sft-demo") {
+        setWizardValue("taskDisplayName", "model-eval-demo");
+      }
+      generateYAML();
+      lastAction.textContent = "已选择模型评测";
+    };
+    document.getElementById("template-service").onclick = function() {
+      setWizardValue("algorithmTemplate", "service");
+      if (!wizardFields.taskDisplayName.value || wizardFields.taskDisplayName.value === "customer-sft-demo") {
+        setWizardValue("taskDisplayName", "model-service-demo");
+      }
+      generateYAML();
+      lastAction.textContent = "已选择发布服务";
     };
     document.getElementById("generate").onclick = function() {
-      generateYAML();
+      generateYAML(true);
       lastAction.textContent = "已生成 YAML";
     };
+    Object.keys(wizardFields).forEach(function(id) {
+      wizardFields[id].addEventListener("input", function() { generateYAML(true); });
+      wizardFields[id].addEventListener("change", function() { generateYAML(true); });
+    });
     Object.keys(fields).forEach(function(id) {
-      fields[id].addEventListener("input", generateYAML);
-      fields[id].addEventListener("change", generateYAML);
+      fields[id].addEventListener("input", function() { generateYAML(false); });
+      fields[id].addEventListener("change", function() { generateYAML(false); });
     });
     document.getElementById("validate").onclick = function() {
       post("/api/v1/ai/validate").then(function(data) {

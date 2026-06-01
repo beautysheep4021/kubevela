@@ -47,7 +47,14 @@ func TestServerServesConsolePage(t *testing.T) {
 	for _, expected := range []string{
 		"使用方工作台",
 		"监测方工作台",
-		"提交意图",
+		"算法任务模板",
+		"SFT 微调",
+		"训练向导",
+		"基础模型 URI",
+		"训练数据 URI",
+		"训练规格",
+		"训练完成后自动发布为服务",
+		"高级配置",
 		"领域 YAML",
 		"治理意图",
 		"工作负载意图",
@@ -97,6 +104,8 @@ func TestConsoleGeneratedAIJobIncludesDeliveryResultMarker(t *testing.T) {
 		"function buildDeliveryJobResultScript",
 		"AI_RESULT_JSON=",
 		"inline://models/\" + fields.name.value + \"/v1",
+		"echo training_size=",
+		"line(\"trainingSize\", wizardFields.trainingSize.value, 4)",
 	} {
 		if !strings.Contains(consoleHTML, expected) {
 			t.Fatalf("console AIJob generator missing %q", expected)
