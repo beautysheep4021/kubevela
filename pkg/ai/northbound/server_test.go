@@ -90,8 +90,14 @@ func TestServerServesConsolePage(t *testing.T) {
 		"登记模型",
 		"设为基础模型",
 		"发布此模型",
+		"评测数据 URI",
+		"通过阈值",
+		"发起评测",
+		"同步评测结果",
 		"/api/v1/ai/artifacts",
 		"/api/v1/ai/models",
+		"/evaluate",
+		"/sync-evaluation",
 		"/probe",
 		"/logs",
 		"/api/v1/ai/audits",
@@ -573,6 +579,126 @@ func TestServerRegistersModelAssetDerivesNameFromVersionedURI(t *testing.T) {
 	}
 	if len(artifacts.saved) != 1 || artifacts.saved[0].Name != "customer-sft-demo" {
 		t.Fatalf("unexpected derived model asset: %#v", artifacts.saved)
+	}
+}
+
+func TestServerStartsModelEvaluationJob(t *testing.T) {
+	applier := &recordingApplicationApplier{}
+	artifacts := &recordingArtifactStore{
+		list: []observe.ModelArtifact{
+			{
+				Namespace: "sock-shop",
+				Name:      "customer-sft-demo",
+				ModelURI:  "inline://models/customer-sft-demo/v1",
+			},
+		},
+	}
+	server := NewServerWithOptions(Options{Applier: applier, Artifacts: artifacts})
+	body := strings.NewReader(`{
+		"evaluationDatasetURI": "inline://datasets/customer-eval",
+		"evaluationType": "accuracy",
+		"passThreshold": 0.8
+	}`)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/models/sock-shop/customer-sft-demo/evaluate", body))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if !applier.called {
+		t.Fatalf("expected evaluation Application to be applied")
+	}
+	content := string(applier.content)
+	for _, expected := range []string{
+		"name: customer-sft-demo-eval",
+		"type: ai-job",
+		"jobKind: evaluation",
+		"model_uri=inline://models/customer-sft-demo/v1",
+		"evaluation_dataset=inline://datasets/customer-eval",
+		"pass_threshold=0.8",
+		"AI_RESULT_JSON=",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("expected evaluation Application to contain %q, got:\n%s", expected, content)
+		}
+	}
+}
+
+func TestServerSyncsModelEvaluationResult(t *testing.T) {
+	reader := &recordingApplicationReader{
+		logs: map[string]*observe.Logs{
+			"sock-shop/customer-sft-demo-eval": {
+				Pod:  "customer-sft-demo-eval-pod",
+				Logs: `AI_RESULT_JSON={"modelURI":"inline://models/customer-sft-demo/v1","metrics":{"accuracy":0.91},"summary":"evaluation-passed"}`,
+			},
+		},
+	}
+	artifacts := &recordingArtifactStore{
+		list: []observe.ModelArtifact{
+			{
+				Namespace:        "sock-shop",
+				Name:             "customer-sft-demo",
+				ModelURI:         "inline://models/customer-sft-demo/v1",
+				EvaluationStatus: "pending",
+			},
+		},
+	}
+	server := NewServerWithOptions(Options{Reader: reader, Artifacts: artifacts})
+	body := strings.NewReader(`{"evaluationJobName":"customer-sft-demo-eval"}`)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/models/sock-shop/customer-sft-demo/sync-evaluation", body))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if len(artifacts.saved) != 1 {
+		t.Fatalf("saved artifacts = %d, want 1", len(artifacts.saved))
+	}
+	asset := artifacts.saved[0]
+	if asset.EvaluationStatus != "passed" || asset.Status != "evaluated" || asset.Metrics["accuracy"] != 0.91 {
+		t.Fatalf("unexpected evaluated model asset: %#v", asset)
+	}
+	if asset.Summary != "evaluation-passed" || asset.SourceApplication != "customer-sft-demo-eval" {
+		t.Fatalf("unexpected evaluation lineage: %#v", asset)
+	}
+}
+
+func TestServerSyncsFailedModelEvaluationResult(t *testing.T) {
+	reader := &recordingApplicationReader{
+		logs: map[string]*observe.Logs{
+			"sock-shop/customer-sft-demo-eval": {
+				Pod:  "customer-sft-demo-eval-pod",
+				Logs: `AI_RESULT_JSON={"modelURI":"inline://models/customer-sft-demo/v1","metrics":{"accuracy":0.42},"summary":"evaluation-failed"}`,
+			},
+		},
+	}
+	artifacts := &recordingArtifactStore{
+		list: []observe.ModelArtifact{
+			{
+				Namespace:        "sock-shop",
+				Name:             "customer-sft-demo",
+				ModelURI:         "inline://models/customer-sft-demo/v1",
+				EvaluationStatus: "pending",
+			},
+		},
+	}
+	server := NewServerWithOptions(Options{Reader: reader, Artifacts: artifacts})
+	body := strings.NewReader(`{"evaluationJobName":"customer-sft-demo-eval"}`)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/models/sock-shop/customer-sft-demo/sync-evaluation", body))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if len(artifacts.saved) != 1 {
+		t.Fatalf("saved artifacts = %d, want 1", len(artifacts.saved))
+	}
+	asset := artifacts.saved[0]
+	if asset.EvaluationStatus != "failed" || asset.Status != "evaluated" || asset.Metrics["accuracy"] != 0.42 {
+		t.Fatalf("unexpected failed evaluation asset: %#v", asset)
+	}
+	if asset.Summary != "evaluation-failed" || asset.SourceApplication != "customer-sft-demo-eval" {
+		t.Fatalf("unexpected failed evaluation lineage: %#v", asset)
 	}
 }
 

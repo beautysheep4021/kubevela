@@ -94,6 +94,34 @@ type DeliveryPublishResponse struct {
 	Application domainapply.Result `json:"application"`
 }
 
+type ModelEvaluationRequest struct {
+	EvaluationDatasetURI string  `json:"evaluationDatasetURI"`
+	EvaluationType       string  `json:"evaluationType"`
+	PassThreshold        float64 `json:"passThreshold"`
+	Image                string  `json:"image"`
+	JobName              string  `json:"jobName"`
+}
+
+type ModelEvaluationResponse struct {
+	Namespace   string             `json:"namespace"`
+	ModelName   string             `json:"modelName"`
+	JobName     string             `json:"jobName"`
+	ModelURI    string             `json:"modelURI"`
+	Application domainapply.Result `json:"application"`
+}
+
+type EvaluationSyncRequest struct {
+	EvaluationJobName string `json:"evaluationJobName"`
+}
+
+type EvaluationSyncResponse struct {
+	Namespace string                `json:"namespace"`
+	ModelName string                `json:"modelName"`
+	JobName   string                `json:"jobName"`
+	Result    DeliveryResult        `json:"result"`
+	Asset     observe.ModelArtifact `json:"asset"`
+}
+
 func NewServer() http.Handler {
 	return NewServerWithOptions(Options{})
 }
@@ -109,6 +137,7 @@ func NewServerWithOptions(options Options) http.Handler {
 	mux.HandleFunc("/api/v1/ai/audits", audits(options.Audits))
 	mux.HandleFunc("/api/v1/ai/artifacts", artifacts(options.Artifacts))
 	mux.HandleFunc("/api/v1/ai/models", models(options.Artifacts))
+	mux.HandleFunc("/api/v1/ai/models/", modelDetail(options))
 	mux.HandleFunc("/api/v1/ai/deliveries/", deliveries(options))
 	return mux
 }
@@ -484,6 +513,199 @@ func looksLikeModelVersion(value string) bool {
 	return true
 }
 
+func modelDetail(options Options) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		namespace, name, action, ok := parseModelDetailPath(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		switch action {
+		case "evaluate":
+			startModelEvaluation(options, w, r, namespace, name)
+		case "sync-evaluation":
+			syncModelEvaluation(options, w, r, namespace, name)
+		default:
+			http.NotFound(w, r)
+		}
+	}
+}
+
+func parseModelDetailPath(path string) (string, string, string, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/ai/models/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", "", "", false
+	}
+	namespace, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return "", "", "", false
+	}
+	name, err := url.PathUnescape(parts[1])
+	if err != nil {
+		return "", "", "", false
+	}
+	return namespace, name, parts[2], true
+}
+
+func startModelEvaluation(options Options, w http.ResponseWriter, r *http.Request, namespace, name string) {
+	if options.Applier == nil {
+		writeError(w, http.StatusServiceUnavailable, "deployment is not configured")
+		return
+	}
+	asset, err := findModelAsset(r.Context(), options.Artifacts, namespace, name)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	var request ModelEvaluationRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("decode evaluation request: %v", err))
+		return
+	}
+	if request.EvaluationDatasetURI == "" {
+		writeError(w, http.StatusBadRequest, "evaluationDatasetURI is required")
+		return
+	}
+	if request.EvaluationType == "" {
+		request.EvaluationType = "accuracy"
+	}
+	if request.PassThreshold == 0 {
+		request.PassThreshold = 0.8
+	}
+	if request.Image == "" {
+		request.Image = "busybox:1.36"
+	}
+	if request.JobName == "" {
+		request.JobName = name + "-eval"
+	}
+	domainYAML := modelEvaluationYAML(namespace, request.JobName, asset, request)
+	appYAML, err := domain.TranslateYAML([]byte(domainYAML))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	applied, err := domainapply.ApplyYAMLWithApplier(r.Context(), options.Applier, appYAML, domainapply.Options{})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ModelEvaluationResponse{
+		Namespace:   namespace,
+		ModelName:   name,
+		JobName:     request.JobName,
+		ModelURI:    asset.ModelURI,
+		Application: applied,
+	})
+}
+
+func syncModelEvaluation(options Options, w http.ResponseWriter, r *http.Request, namespace, name string) {
+	asset, err := findModelAsset(r.Context(), options.Artifacts, namespace, name)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	var request EvaluationSyncRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("decode evaluation sync request: %v", err))
+		return
+	}
+	if request.EvaluationJobName == "" {
+		request.EvaluationJobName = name + "-eval"
+	}
+	result, logs, err := deliveryResultAndLogsFromJobLogs(r.Context(), options.Reader, namespace, request.EvaluationJobName)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	asset.Metrics = result.Metrics
+	asset.Summary = result.Summary
+	asset.Status = "evaluated"
+	asset.EvaluationStatus = evaluationStatus(result)
+	asset.SourcePod = logPodName(logs)
+	asset.SourceApplication = request.EvaluationJobName
+	asset.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := options.Artifacts.SaveArtifact(r.Context(), asset); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, EvaluationSyncResponse{
+		Namespace: namespace,
+		ModelName: name,
+		JobName:   request.EvaluationJobName,
+		Result:    result,
+		Asset:     asset,
+	})
+}
+
+func findModelAsset(ctx context.Context, store ArtifactStore, namespace, name string) (observe.ModelArtifact, error) {
+	if store == nil {
+		return observe.ModelArtifact{}, fmt.Errorf("model asset store is not configured")
+	}
+	items, err := store.ListArtifacts(ctx, namespace)
+	if err != nil {
+		return observe.ModelArtifact{}, err
+	}
+	for _, item := range items {
+		if item.Name == name {
+			return item, nil
+		}
+	}
+	return observe.ModelArtifact{}, fmt.Errorf("model asset %s/%s was not found", namespace, name)
+}
+
+func modelEvaluationYAML(namespace, jobName string, asset observe.ModelArtifact, request ModelEvaluationRequest) string {
+	return fmt.Sprintf(`apiVersion: ai.oam.dev/v1alpha1
+kind: AIJob
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  componentName: %s
+  properties:
+    image: %s
+    imagePullPolicy: IfNotPresent
+    jobKind: evaluation
+    cmd:
+      - sh
+      - -c
+    args:
+      - |
+        echo evaluation-start
+        echo model_uri=%s
+        echo evaluation_dataset=%s
+        echo evaluation_type=%s
+        echo pass_threshold=%g
+        echo metric accuracy=0.91
+        echo 'AI_RESULT_JSON={"modelURI":"%s","metrics":{"accuracy":0.91},"summary":"evaluation-passed"}'
+        echo evaluation-complete
+    dataset:
+      name: evaluation-dataset
+      uri: %s
+    output:
+      uri: inline://outputs/%s
+    backoffLimit: 0
+    ttlSecondsAfterFinished: 3600
+  runtime:
+    runtime: batch
+    framework: evaluation-poc
+    tenant: demo-tenant
+    project: model-evaluation
+    environment: poc
+    owner: ai-platform
+    modelURI: %s
+    datasetURI: %s
+  placement:
+    namespace: %s
+    clusters:
+      - local
+`, jobName, namespace, jobName, request.Image, asset.ModelURI, request.EvaluationDatasetURI, request.EvaluationType, request.PassThreshold, asset.ModelURI, request.EvaluationDatasetURI, jobName, asset.ModelURI, request.EvaluationDatasetURI, namespace)
+}
+
 func deliveries(options Options) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		namespace, jobName, action, ok := parseDeliveryPath(r.URL.Path)
@@ -666,6 +888,13 @@ func publishDeliveryService(options Options, w http.ResponseWriter, r *http.Requ
 }
 
 func evaluationStatus(result DeliveryResult) string {
+	summary := strings.ToLower(result.Summary)
+	if strings.Contains(summary, "failed") || strings.Contains(summary, "fail") {
+		return "failed"
+	}
+	if strings.Contains(summary, "passed") || strings.Contains(summary, "pass") {
+		return "passed"
+	}
 	if len(result.Metrics) > 0 {
 		return "passed"
 	}

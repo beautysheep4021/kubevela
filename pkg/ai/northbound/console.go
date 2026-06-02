@@ -725,6 +725,8 @@ const consoleHTML = `<!doctype html>
           <pre id="delivery-output" class="log-box">选择 AIJob 后，可解析 AI_RESULT_JSON 并发布为 AIService。发布成功后可测试服务 /healthz。</pre>
           <div class="log-toolbar">
             <div class="label">我的模型 · 模型资产库</div>
+            <input id="evaluation-dataset-uri" value="inline://datasets/customer-eval" title="评测数据 URI">
+            <input id="evaluation-threshold" value="0.8" title="通过阈值">
             <button class="ghost" id="refresh-models">刷新我的模型</button>
             <button class="secondary" id="register-model">登记模型</button>
           </div>
@@ -938,6 +940,8 @@ const consoleHTML = `<!doctype html>
     var deliveryOutput = document.getElementById("delivery-output");
     var deliveryServiceName = document.getElementById("delivery-service-name");
     var deliveryServiceImage = document.getElementById("delivery-service-image");
+    var evaluationDatasetURI = document.getElementById("evaluation-dataset-uri");
+    var evaluationThreshold = document.getElementById("evaluation-threshold");
     var monitorLogPod = document.getElementById("monitor-log-pod");
     var monitorLogContainer = document.getElementById("monitor-log-container");
     var monitorLogTail = document.getElementById("monitor-log-tail");
@@ -1385,8 +1389,14 @@ const consoleHTML = `<!doctype html>
           "<span title=\"" + (item.modelURI || "") + "\">" + (item.modelURI || "-") + "</span>",
           "<span>" + (item.evaluationStatus || "pending") + "</span>",
           "<span>" + (item.status || "trained") + " · " + (item.visibility || "private") + "</span>",
-          "<span><button class=\"ghost use-model\" type=\"button\">设为基础模型</button> <button class=\"secondary serve-model\" type=\"button\">发布此模型</button></span>"
+          "<span><button class=\"ghost eval-model\" type=\"button\">发起评测</button> <button class=\"ghost sync-eval\" type=\"button\">同步评测结果</button> <button class=\"ghost use-model\" type=\"button\">设为基础模型</button> <button class=\"secondary serve-model\" type=\"button\">发布此模型</button></span>"
         ].join("");
+        row.querySelector(".eval-model").onclick = function() {
+          startModelEvaluation(item);
+        };
+        row.querySelector(".sync-eval").onclick = function() {
+          syncModelEvaluation(item);
+        };
         row.querySelector(".use-model").onclick = function() {
           setWizardValue("algorithmTemplate", "sft");
           setWizardValue("baseModelURI", item.modelURI || "");
@@ -1453,6 +1463,60 @@ const consoleHTML = `<!doctype html>
         return refreshModels();
       }).catch(function(err) {
         deliveryOutput.textContent = "模型登记失败：" + err.message;
+      });
+    }
+    function modelActionBase(item) {
+      return "/api/v1/ai/models/" + encodeURIComponent(item.namespace || fields.namespace.value || "default") + "/" + encodeURIComponent(item.name || modelNameFromURI(item.modelURI || ""));
+    }
+    function startModelEvaluation(item) {
+      var threshold = parseFloat(evaluationThreshold.value || "0.8");
+      if (isNaN(threshold)) {
+        threshold = 0.8;
+      }
+      var payload = {
+        evaluationDatasetURI: evaluationDatasetURI.value || "inline://datasets/customer-eval",
+        evaluationType: "accuracy",
+        passThreshold: threshold
+      };
+      deliveryOutput.textContent = "正在发起模型评测...";
+      return fetch(modelActionBase(item) + "/evaluate", {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-AI-User": "console"},
+        body: JSON.stringify(payload)
+      }).then(function(res) {
+        return res.json().then(function(data) {
+          if (!res.ok) {
+            throw new Error(data.error || ("HTTP " + res.status));
+          }
+          return data;
+        });
+      }).then(function(data) {
+        selectedTask = {namespace: data.namespace, name: data.jobName};
+        deliveryOutput.textContent = JSON.stringify(data, null, 2) + "\\n\\n评测 Job 已提交。等待完成后点击“同步评测结果”。";
+        refreshTasks();
+      }).catch(function(err) {
+        deliveryOutput.textContent = "发起评测失败：" + err.message;
+      });
+    }
+    function syncModelEvaluation(item) {
+      var jobName = (item.name || modelNameFromURI(item.modelURI || "")) + "-eval";
+      deliveryOutput.textContent = "正在同步评测结果...";
+      return fetch(modelActionBase(item) + "/sync-evaluation", {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-AI-User": "console"},
+        body: JSON.stringify({evaluationJobName: jobName})
+      }).then(function(res) {
+        return res.json().then(function(data) {
+          if (!res.ok) {
+            throw new Error(data.error || ("HTTP " + res.status));
+          }
+          return data;
+        });
+      }).then(function(data) {
+        deliveryOutput.textContent = JSON.stringify(data, null, 2) + "\\n\\n评测结果已同步到模型资产。";
+        return refreshModels();
+      }).catch(function(err) {
+        deliveryOutput.textContent = "同步评测结果失败：" + err.message + "\\n\\n请确认评测 Job 已完成，日志中包含 AI_RESULT_JSON=...。";
       });
     }
     function lifecyclePath(target, action) {
