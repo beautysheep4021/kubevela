@@ -95,6 +95,29 @@ func TestClientSavesAndListsArtifacts(t *testing.T) {
 	}
 }
 
+func TestClientSavesAndListsDatasets(t *testing.T) {
+	client := Client{Kube: fake.NewSimpleClientset()}
+
+	if err := client.SaveDataset(context.Background(), DatasetArtifact{
+		Namespace:   "sock-shop",
+		Name:        "customer-sft",
+		DisplayName: "客服问答 SFT 数据集",
+		DatasetURI:  "dataset://sock-shop/customer-sft/v1",
+		Format:      "sharegpt-jsonl",
+		Purpose:     "sft",
+		Status:      "validated",
+	}); err != nil {
+		t.Fatalf("save dataset: %v", err)
+	}
+	items, err := client.ListDatasets(context.Background(), "sock-shop")
+	if err != nil {
+		t.Fatalf("list datasets: %v", err)
+	}
+	if len(items) != 1 || items[0].DatasetURI != "dataset://sock-shop/customer-sft/v1" || items[0].Format != "sharegpt-jsonl" {
+		t.Fatalf("unexpected datasets: %#v", items)
+	}
+}
+
 func logPodObject(name, container string, createdAt time.Time) unstructured.Unstructured {
 	return unstructured.Unstructured{
 		Object: map[string]interface{}{

@@ -125,6 +125,26 @@ type ArtifactList struct {
 	Items []ModelArtifact `json:"items"`
 }
 
+type DatasetArtifact struct {
+	Namespace   string `json:"namespace,omitempty"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName,omitempty"`
+	DatasetURI  string `json:"datasetURI"`
+	Format      string `json:"format,omitempty"`
+	Purpose     string `json:"purpose,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Visibility  string `json:"visibility,omitempty"`
+	Owner       string `json:"owner,omitempty"`
+	Size        string `json:"size,omitempty"`
+	CreatedAt   string `json:"createdAt,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+}
+
+type DatasetList struct {
+	Items []DatasetArtifact `json:"items"`
+}
+
 type LogPod struct {
 	Name       string   `json:"name"`
 	Phase      string   `json:"phase,omitempty"`

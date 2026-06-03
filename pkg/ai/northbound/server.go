@@ -24,6 +24,7 @@ type Options struct {
 	Manager   ApplicationManager
 	Prober    ApplicationProber
 	Artifacts ArtifactStore
+	Datasets  DatasetStore
 	Audits    AuditStore
 }
 
@@ -55,6 +56,11 @@ type AuditStore interface {
 type ArtifactStore interface {
 	SaveArtifact(ctx context.Context, artifact observe.ModelArtifact) error
 	ListArtifacts(ctx context.Context, namespace string) ([]observe.ModelArtifact, error)
+}
+
+type DatasetStore interface {
+	SaveDataset(ctx context.Context, dataset observe.DatasetArtifact) error
+	ListDatasets(ctx context.Context, namespace string) ([]observe.DatasetArtifact, error)
 }
 
 type DeployResponse struct {
@@ -138,6 +144,7 @@ func NewServerWithOptions(options Options) http.Handler {
 	mux.HandleFunc("/api/v1/ai/artifacts", artifacts(options.Artifacts))
 	mux.HandleFunc("/api/v1/ai/models", models(options.Artifacts))
 	mux.HandleFunc("/api/v1/ai/models/", modelDetail(options))
+	mux.HandleFunc("/api/v1/ai/datasets", datasets(options.Datasets))
 	mux.HandleFunc("/api/v1/ai/deliveries/", deliveries(options))
 	return mux
 }
@@ -474,6 +481,81 @@ func models(store ArtifactStore) http.HandlerFunc {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	}
+}
+
+func datasets(store DatasetStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if store == nil {
+			writeError(w, http.StatusServiceUnavailable, "dataset asset store is not configured")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			items, err := store.ListDatasets(r.Context(), r.URL.Query().Get("namespace"))
+			if err != nil {
+				writeError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, observe.DatasetList{Items: items})
+		case http.MethodPost:
+			var dataset observe.DatasetArtifact
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)).Decode(&dataset); err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("decode dataset asset request: %v", err))
+				return
+			}
+			if dataset.Namespace == "" {
+				writeError(w, http.StatusBadRequest, "namespace is required")
+				return
+			}
+			if dataset.DatasetURI == "" {
+				writeError(w, http.StatusBadRequest, "datasetURI is required")
+				return
+			}
+			if dataset.Name == "" {
+				dataset.Name = datasetAssetNameFromURI(dataset.DatasetURI)
+			}
+			if dataset.DisplayName == "" {
+				dataset.DisplayName = dataset.Name
+			}
+			if dataset.Status == "" {
+				dataset.Status = "registered"
+			}
+			if dataset.Visibility == "" {
+				dataset.Visibility = "private"
+			}
+			if dataset.Owner == "" {
+				dataset.Owner = actorFromRequest(r)
+			}
+			if dataset.CreatedAt == "" {
+				dataset.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+			}
+			if err := store.SaveDataset(r.Context(), dataset); err != nil {
+				writeError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusCreated, dataset)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	}
+}
+
+func datasetAssetNameFromURI(datasetURI string) string {
+	clean := strings.TrimRight(strings.Split(datasetURI, "?")[0], "/")
+	parts := strings.Split(clean, "/")
+	name := "dataset"
+	if len(parts) > 0 && strings.TrimSpace(parts[len(parts)-1]) != "" {
+		name = parts[len(parts)-1]
+	}
+	name = strings.ToLower(strings.NewReplacer("_", "-", ".", "-", ":", "-", "/", "-").Replace(name))
+	name = strings.Trim(name, "-")
+	if name == "" {
+		return "dataset"
+	}
+	if len(name) > 50 {
+		name = name[:50]
+	}
+	return name
 }
 
 func modelAssetNameFromURI(modelURI string) string {

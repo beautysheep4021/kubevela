@@ -535,6 +535,82 @@ func (c Client) ListArtifacts(ctx context.Context, namespace string) ([]ModelArt
 	return items, nil
 }
 
+func (c Client) SaveDataset(ctx context.Context, dataset DatasetArtifact) error {
+	if c.Kube == nil {
+		return fmt.Errorf("kubernetes client is required for datasets")
+	}
+	if dataset.Namespace == "" {
+		return fmt.Errorf("namespace is required")
+	}
+	if dataset.Name == "" {
+		return fmt.Errorf("dataset name is required")
+	}
+	if dataset.DatasetURI == "" {
+		return fmt.Errorf("dataset URI is required")
+	}
+	if dataset.CreatedAt == "" {
+		dataset.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	content, err := json.Marshal(dataset)
+	if err != nil {
+		return fmt.Errorf("encode dataset artifact: %w", err)
+	}
+	name := datasetConfigMapName(dataset.Name)
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: dataset.Namespace,
+			Labels: map[string]string{
+				"ai.oam.dev/dataset": "true",
+			},
+		},
+		Data: map[string]string{"dataset.json": string(content)},
+	}
+	existing, err := c.Kube.CoreV1().ConfigMaps(dataset.Namespace).Get(ctx, name, metav1.GetOptions{})
+	if err == nil {
+		configMap.ResourceVersion = existing.ResourceVersion
+		if _, err := c.Kube.CoreV1().ConfigMaps(dataset.Namespace).Update(ctx, configMap, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("update dataset ConfigMap %s/%s: %w", dataset.Namespace, name, err)
+		}
+		return nil
+	}
+	if _, err := c.Kube.CoreV1().ConfigMaps(dataset.Namespace).Create(ctx, configMap, metav1.CreateOptions{}); err != nil {
+		return fmt.Errorf("create dataset ConfigMap %s/%s: %w", dataset.Namespace, name, err)
+	}
+	return nil
+}
+
+func (c Client) ListDatasets(ctx context.Context, namespace string) ([]DatasetArtifact, error) {
+	if c.Kube == nil {
+		return nil, fmt.Errorf("kubernetes client is required for datasets")
+	}
+	list, err := c.Kube.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "ai.oam.dev/dataset=true",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list dataset ConfigMaps: %w", err)
+	}
+	items := make([]DatasetArtifact, 0, len(list.Items))
+	for i := range list.Items {
+		raw := list.Items[i].Data["dataset.json"]
+		if raw == "" {
+			continue
+		}
+		var dataset DatasetArtifact
+		if err := json.Unmarshal([]byte(raw), &dataset); err != nil {
+			continue
+		}
+		if dataset.Namespace == "" {
+			dataset.Namespace = list.Items[i].Namespace
+		}
+		items = append(items, dataset)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].CreatedAt > items[j].CreatedAt
+	})
+	return items, nil
+}
+
 func selectProbeService(services []unstructured.Unstructured) unstructured.Unstructured {
 	sort.Slice(services, func(i, j int) bool {
 		return services[i].GetName() < services[j].GetName()
@@ -692,6 +768,14 @@ func auditEventID(event AuditEvent) string {
 
 func artifactConfigMapName(name string) string {
 	value := "ai-artifact-" + strings.ToLower(strings.NewReplacer("_", "-", ".", "-", ":", "-", "/", "-").Replace(name))
+	if len(value) > 63 {
+		value = value[:63]
+	}
+	return strings.Trim(value, "-")
+}
+
+func datasetConfigMapName(name string) string {
+	value := "ai-dataset-" + strings.ToLower(strings.NewReplacer("_", "-", ".", "-", ":", "-", "/", "-").Replace(name))
 	if len(value) > 63 {
 		value = value[:63]
 	}

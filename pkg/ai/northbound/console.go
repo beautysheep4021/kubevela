@@ -554,7 +554,13 @@ const consoleHTML = `<!doctype html>
             <input id="baseModelURI" value="modelscope://qwen/Qwen2.5-0.5B">
           </div>
           <div class="field wide train-field">
-            <label for="trainingDataURI">训练数据 URI</label>
+            <label for="trainingDatasetSelect">训练数据集</label>
+            <select id="trainingDatasetSelect">
+              <option value="inline://datasets/customer-sft-demo">客服问答 SFT 数据集（示例）</option>
+            </select>
+          </div>
+          <div class="field wide train-field">
+            <label for="trainingDataURI">数据集内部 URI</label>
             <input id="trainingDataURI" value="inline://datasets/customer-sft-demo">
           </div>
           <div class="field train-field">
@@ -732,6 +738,21 @@ const consoleHTML = `<!doctype html>
           </div>
           <div id="model-list" class="task-list">
             <div class="empty">训练完成后可登记模型资产；已登记模型可以“设为基础模型”继续训练，或“发布此模型”生成服务模板。</div>
+          </div>
+          <div class="log-toolbar">
+            <div class="label">数据资产库</div>
+            <input id="dataset-name" value="customer-sft-demo" title="数据集名称">
+            <input id="dataset-uri" value="inline://datasets/customer-sft-demo" title="数据集内部 URI">
+            <select id="dataset-format" title="数据格式">
+              <option value="sharegpt-jsonl">ShareGPT JSONL</option>
+              <option value="alpaca-jsonl">Alpaca JSONL</option>
+              <option value="custom-jsonl">自定义 JSONL</option>
+            </select>
+            <button class="ghost" id="refresh-datasets">刷新数据集</button>
+            <button class="secondary" id="register-dataset">登记数据集</button>
+          </div>
+          <div id="dataset-list" class="task-list">
+            <div class="empty">用户上传或登记数据集后，可在训练向导中“选择数据集”，平台内部再映射为 datasetURI。</div>
           </div>
           <div class="log-toolbar">
             <div class="label">生命周期操作</div>
@@ -928,6 +949,7 @@ const consoleHTML = `<!doctype html>
     var cards = document.getElementById("cards");
     var taskList = document.getElementById("task-list");
     var modelList = document.getElementById("model-list");
+    var datasetList = document.getElementById("dataset-list");
     var lastAction = document.getElementById("last-action");
     var selectedTask = null;
     var selectedMonitorTask = null;
@@ -942,6 +964,10 @@ const consoleHTML = `<!doctype html>
     var deliveryServiceImage = document.getElementById("delivery-service-image");
     var evaluationDatasetURI = document.getElementById("evaluation-dataset-uri");
     var evaluationThreshold = document.getElementById("evaluation-threshold");
+    var trainingDatasetSelect = document.getElementById("trainingDatasetSelect");
+    var datasetName = document.getElementById("dataset-name");
+    var datasetURI = document.getElementById("dataset-uri");
+    var datasetFormat = document.getElementById("dataset-format");
     var monitorLogPod = document.getElementById("monitor-log-pod");
     var monitorLogContainer = document.getElementById("monitor-log-container");
     var monitorLogTail = document.getElementById("monitor-log-tail");
@@ -974,6 +1000,15 @@ const consoleHTML = `<!doctype html>
     }
     function setWizardValue(id, value) {
       wizardFields[id].value = value;
+    }
+    function setTrainingDataset(uri) {
+      setWizardValue("trainingDataURI", uri || "");
+      if (trainingDatasetSelect && uri) {
+        trainingDatasetSelect.value = uri;
+      }
+      if (datasetURI && uri) {
+        datasetURI.value = uri;
+      }
     }
     function slug(value) {
       return (value || "ai-task").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "ai-task";
@@ -1369,6 +1404,95 @@ const consoleHTML = `<!doctype html>
         deliveryOutput.textContent = JSON.stringify(data, null, 2);
       }).catch(function(err) {
         deliveryOutput.textContent = "模型产物读取失败：" + err.message;
+      });
+    }
+    function renderDatasets(items) {
+      datasetList.innerHTML = "";
+      trainingDatasetSelect.innerHTML = "";
+      if (!items || !items.length) {
+        var option = document.createElement("option");
+        option.value = wizardFields.trainingDataURI.value || "inline://datasets/customer-sft-demo";
+        option.textContent = "客服问答 SFT 数据集（示例）";
+        trainingDatasetSelect.appendChild(option);
+        var empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "暂无数据资产。可以先登记一个数据集，再在训练向导中选择数据集。";
+        datasetList.appendChild(empty);
+        return;
+      }
+      items.forEach(function(item) {
+        var uri = item.datasetURI || "";
+        var option = document.createElement("option");
+        option.value = uri;
+        option.textContent = (item.displayName || item.name || uri) + " · " + (item.format || "unknown") + " · " + (item.status || "registered");
+        trainingDatasetSelect.appendChild(option);
+        var row = document.createElement("div");
+        row.className = "task-row";
+        row.innerHTML = [
+          "<strong>" + ((item.namespace || fields.namespace.value || "-") + "/" + (item.displayName || item.name || "-")) + "</strong>",
+          "<span title=\"" + uri + "\">" + (uri || "-") + "</span>",
+          "<span>" + (item.purpose || "sft") + " · " + (item.format || "unknown") + "</span>",
+          "<span>" + (item.status || "registered") + " · " + (item.visibility || "private") + "</span>",
+          "<span><button class=\"ghost use-dataset\" type=\"button\">选择数据集</button></span>"
+        ].join("");
+        row.querySelector(".use-dataset").onclick = function() {
+          setTrainingDataset(uri);
+          generateYAML(true);
+          lastAction.textContent = "已选择数据集";
+        };
+        datasetList.appendChild(row);
+      });
+      if (wizardFields.trainingDataURI.value) {
+        trainingDatasetSelect.value = wizardFields.trainingDataURI.value;
+      } else if (items[0] && items[0].datasetURI) {
+        setTrainingDataset(items[0].datasetURI);
+      }
+    }
+    function refreshDatasets() {
+      var ns = encodeURIComponent(fields.namespace.value || "");
+      datasetList.innerHTML = "<div class=\"empty\">正在读取数据资产库...</div>";
+      return fetchJSON("/api/v1/ai/datasets?namespace=" + ns).then(function(data) {
+        renderDatasets(data.items || []);
+      }).catch(function(err) {
+        datasetList.innerHTML = "<div class=\"empty\">数据资产读取失败：" + err.message + "</div>";
+      });
+    }
+    function registerDatasetAsset() {
+      var uri = datasetURI.value || wizardFields.trainingDataURI.value || "";
+      if (!uri) {
+        deliveryOutput.textContent = "请先填写或选择一个数据集内部 URI。";
+        return Promise.resolve();
+      }
+      var name = slug(datasetName.value || uri);
+      var payload = {
+        namespace: fields.namespace.value || "default",
+        name: name,
+        displayName: datasetName.value || name,
+        datasetURI: uri,
+        format: datasetFormat.value || "sharegpt-jsonl",
+        purpose: wizardFields.algorithmTemplate.value === "evaluation" ? "evaluation" : "sft",
+        status: "validated",
+        visibility: "private",
+        source: "console"
+      };
+      deliveryOutput.textContent = "正在登记数据集...";
+      return fetch("/api/v1/ai/datasets", {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-AI-User": "console"},
+        body: JSON.stringify(payload)
+      }).then(function(res) {
+        return res.json().then(function(data) {
+          if (!res.ok) {
+            throw new Error(data.error || ("HTTP " + res.status));
+          }
+          return data;
+        });
+      }).then(function(data) {
+        setTrainingDataset(data.datasetURI || uri);
+        deliveryOutput.textContent = JSON.stringify(data, null, 2) + "\\n\\n数据资产已登记，可在训练向导中选择。";
+        return refreshDatasets();
+      }).catch(function(err) {
+        deliveryOutput.textContent = "数据集登记失败：" + err.message;
       });
     }
     function renderModels(items) {
@@ -1882,6 +2006,12 @@ const consoleHTML = `<!doctype html>
     document.getElementById("refresh-artifacts").onclick = refreshArtifacts;
     document.getElementById("refresh-models").onclick = refreshModels;
     document.getElementById("register-model").onclick = registerModelAsset;
+    document.getElementById("refresh-datasets").onclick = refreshDatasets;
+    document.getElementById("register-dataset").onclick = registerDatasetAsset;
+    trainingDatasetSelect.onchange = function() {
+      setTrainingDataset(trainingDatasetSelect.value);
+      generateYAML(true);
+    };
     document.getElementById("delete-task").onclick = function() {
       runLifecycle(selectedTask, "delete", lastAction, function() {
         selectedTask = null;

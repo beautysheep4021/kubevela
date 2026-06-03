@@ -51,7 +51,7 @@ func TestServerServesConsolePage(t *testing.T) {
 		"SFT 微调",
 		"训练向导",
 		"基础模型 URI",
-		"训练数据 URI",
+		"训练数据集",
 		"训练规格",
 		"训练完成后自动发布为服务",
 		"高级配置",
@@ -90,6 +90,10 @@ func TestServerServesConsolePage(t *testing.T) {
 		"登记模型",
 		"设为基础模型",
 		"发布此模型",
+		"数据资产库",
+		"登记数据集",
+		"选择数据集",
+		"/api/v1/ai/datasets",
 		"评测数据 URI",
 		"通过阈值",
 		"发起评测",
@@ -582,6 +586,73 @@ func TestServerRegistersModelAssetDerivesNameFromVersionedURI(t *testing.T) {
 	}
 }
 
+func TestServerListsDatasetAssets(t *testing.T) {
+	datasets := &recordingDatasetStore{
+		list: []observe.DatasetArtifact{
+			{
+				Namespace:  "sock-shop",
+				Name:       "customer-sft",
+				DatasetURI: "dataset://sock-shop/customer-sft/v1",
+				Format:     "sharegpt-jsonl",
+				Purpose:    "sft",
+				Status:     "validated",
+			},
+		},
+	}
+	server := NewServerWithOptions(Options{Datasets: datasets})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/datasets?namespace=sock-shop", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload observe.DatasetList
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, recorder.Body.String())
+	}
+	if len(payload.Items) != 1 || payload.Items[0].DatasetURI != "dataset://sock-shop/customer-sft/v1" || payload.Items[0].Status != "validated" {
+		t.Fatalf("unexpected dataset assets: %#v", payload)
+	}
+	if datasets.listNamespace != "sock-shop" {
+		t.Fatalf("namespace = %q, want sock-shop", datasets.listNamespace)
+	}
+}
+
+func TestServerRegistersDatasetAsset(t *testing.T) {
+	datasets := &recordingDatasetStore{}
+	server := NewServerWithOptions(Options{Datasets: datasets})
+	body := strings.NewReader(`{
+		"namespace": "sock-shop",
+		"name": "customer-sft",
+		"displayName": "客服问答 SFT 数据集",
+		"datasetURI": "oss://datasets/customer-sft/v1/train.jsonl",
+		"format": "sharegpt-jsonl",
+		"purpose": "sft",
+		"status": "validated"
+	}`)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/datasets", body)
+	req.Header.Set("X-AI-User", "tester")
+	server.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	if len(datasets.saved) != 1 {
+		t.Fatalf("saved datasets = %d, want 1", len(datasets.saved))
+	}
+	asset := datasets.saved[0]
+	if asset.Namespace != "sock-shop" || asset.Name != "customer-sft" || asset.DatasetURI != "oss://datasets/customer-sft/v1/train.jsonl" {
+		t.Fatalf("unexpected saved dataset asset: %#v", asset)
+	}
+	if asset.DisplayName != "客服问答 SFT 数据集" || asset.Format != "sharegpt-jsonl" || asset.Purpose != "sft" {
+		t.Fatalf("unexpected dataset metadata: %#v", asset)
+	}
+	if asset.Status != "validated" || asset.Owner != "tester" {
+		t.Fatalf("unexpected dataset lifecycle fields: %#v", asset)
+	}
+}
+
 func TestServerStartsModelEvaluationJob(t *testing.T) {
 	applier := &recordingApplicationApplier{}
 	artifacts := &recordingArtifactStore{
@@ -963,12 +1034,28 @@ type recordingArtifactStore struct {
 	listNamespace string
 }
 
+type recordingDatasetStore struct {
+	saved         []observe.DatasetArtifact
+	list          []observe.DatasetArtifact
+	listNamespace string
+}
+
 func (s *recordingArtifactStore) SaveArtifact(_ context.Context, artifact observe.ModelArtifact) error {
 	s.saved = append(s.saved, artifact)
 	return nil
 }
 
 func (s *recordingArtifactStore) ListArtifacts(_ context.Context, namespace string) ([]observe.ModelArtifact, error) {
+	s.listNamespace = namespace
+	return s.list, nil
+}
+
+func (s *recordingDatasetStore) SaveDataset(_ context.Context, dataset observe.DatasetArtifact) error {
+	s.saved = append(s.saved, dataset)
+	return nil
+}
+
+func (s *recordingDatasetStore) ListDatasets(_ context.Context, namespace string) ([]observe.DatasetArtifact, error) {
 	s.listNamespace = namespace
 	return s.list, nil
 }

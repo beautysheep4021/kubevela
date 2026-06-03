@@ -78,6 +78,7 @@ func buildServerOptions(parsed args) (northbound.Options, error) {
 		Manager:   reader,
 		Prober:    reader,
 		Artifacts: reader,
+		Datasets:  reader,
 		Audits:    reader,
 	}, nil
 }
