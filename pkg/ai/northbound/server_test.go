@@ -50,8 +50,10 @@ func TestServerServesConsolePage(t *testing.T) {
 		"算法任务模板",
 		"SFT 微调",
 		"训练向导",
-		"基础模型 URI",
+		"基础模型",
 		"训练数据集",
+		"待发布模型",
+		"评测数据集",
 		"训练规格",
 		"训练完成后自动发布为服务",
 		"高级配置",
@@ -94,7 +96,6 @@ func TestServerServesConsolePage(t *testing.T) {
 		"登记数据集",
 		"选择数据集",
 		"/api/v1/ai/datasets",
-		"评测数据 URI",
 		"通过阈值",
 		"发起评测",
 		"同步评测结果",
@@ -113,6 +114,17 @@ func TestServerServesConsolePage(t *testing.T) {
 			t.Fatalf("console page missing %q", expected)
 		}
 	}
+	for _, forbidden := range []string{
+		"基础模型 URI",
+		"训练数据 URI",
+		"待发布模型 URI",
+		"评测数据 URI",
+		"数据集内部 URI",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("console page still exposes user-facing URI label %q", forbidden)
+		}
+	}
 }
 
 func TestConsoleGeneratedAIJobIncludesDeliveryResultMarker(t *testing.T) {
@@ -126,6 +138,33 @@ func TestConsoleGeneratedAIJobIncludesDeliveryResultMarker(t *testing.T) {
 	} {
 		if !strings.Contains(consoleHTML, expected) {
 			t.Fatalf("console AIJob generator missing %q", expected)
+		}
+	}
+}
+
+func TestConsoleKeepsUserAssetPathsAwayFromRawURIs(t *testing.T) {
+	for _, forbidden := range []string{
+		"datasetURI。</div>",
+		"请先填写或选择一个数据集内部 URI。",
+		"<span title=\\\"\" + uri + \"\\\">\" + (uri || \"-\") + \"</span>",
+		"<span title=\\\"\" + (item.modelURI || \"\") + \"\\\">\" + (item.modelURI || \"-\") + \"</span>",
+	} {
+		if strings.Contains(consoleHTML, forbidden) {
+			t.Fatalf("console user asset path still renders raw URI fragment %q", forbidden)
+		}
+	}
+	for _, expected := range []string{
+		"function setBaseModel",
+		"function setServiceModel",
+		"function setEvaluationDataset",
+		"baseModelSelect.onchange",
+		"serviceModelSelect.onchange",
+		"evaluationDatasetSelect.onchange",
+		"资产编号：",
+		"数据集编号：",
+	} {
+		if !strings.Contains(consoleHTML, expected) {
+			t.Fatalf("console user asset path missing %q", expected)
 		}
 	}
 }

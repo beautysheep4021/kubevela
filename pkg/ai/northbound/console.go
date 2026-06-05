@@ -103,6 +103,7 @@ const consoleHTML = `<!doctype html>
     }
     .view { display: none; }
     .view.active { display: block; }
+    .internal-field { display: none !important; }
     .label {
       color: var(--muted);
       font-size: 11px;
@@ -526,7 +527,7 @@ const consoleHTML = `<!doctype html>
           </button>
           <button class="template-card" id="template-service" type="button">
             <strong>发布服务</strong>
-            <span>已有 modelURI 时直接发布为在线服务，并通过 /healthz 做访问测试。</span>
+            <span>从模型资产库选择已训练模型，发布为在线服务，并通过 /healthz 做访问测试。</span>
           </button>
         </div>
         <div class="wizard-steps">
@@ -550,7 +551,13 @@ const consoleHTML = `<!doctype html>
             <input id="taskDisplayName" value="customer-sft-demo">
           </div>
           <div class="field wide train-field">
-            <label for="baseModelURI">基础模型 URI</label>
+            <label for="baseModelSelect">基础模型</label>
+            <select id="baseModelSelect">
+              <option value="model://platform/qwen2.5-0.5b-demo">Qwen2.5-0.5B 平台示例模型</option>
+            </select>
+          </div>
+          <div class="field wide train-field internal-field">
+            <label for="baseModelURI">内部基础模型引用</label>
             <input id="baseModelURI" value="modelscope://qwen/Qwen2.5-0.5B">
           </div>
           <div class="field wide train-field">
@@ -559,8 +566,8 @@ const consoleHTML = `<!doctype html>
               <option value="inline://datasets/customer-sft-demo">客服问答 SFT 数据集（示例）</option>
             </select>
           </div>
-          <div class="field wide train-field">
-            <label for="trainingDataURI">数据集内部 URI</label>
+          <div class="field wide train-field internal-field">
+            <label for="trainingDataURI">内部数据集引用</label>
             <input id="trainingDataURI" value="inline://datasets/customer-sft-demo">
           </div>
           <div class="field train-field">
@@ -587,7 +594,13 @@ const consoleHTML = `<!doctype html>
             <input id="learningRate" value="2e-5">
           </div>
           <div class="field service-template-field wide">
-            <label for="serviceModelURI">待发布模型 URI</label>
+            <label for="serviceModelSelect">待发布模型</label>
+            <select id="serviceModelSelect">
+              <option value="inline://models/customer-sft-demo/v1">customer-sft-demo 示例模型</option>
+            </select>
+          </div>
+          <div class="field service-template-field wide internal-field">
+            <label for="serviceModelURI">内部模型引用</label>
             <input id="serviceModelURI" value="inline://models/customer-sft-demo/v1">
           </div>
         </div>
@@ -731,7 +744,10 @@ const consoleHTML = `<!doctype html>
           <pre id="delivery-output" class="log-box">选择 AIJob 后，可解析 AI_RESULT_JSON 并发布为 AIService。发布成功后可测试服务 /healthz。</pre>
           <div class="log-toolbar">
             <div class="label">我的模型 · 模型资产库</div>
-            <input id="evaluation-dataset-uri" value="inline://datasets/customer-eval" title="评测数据 URI">
+            <select id="evaluationDatasetSelect" title="评测数据集">
+              <option value="inline://datasets/customer-eval">默认评测数据集</option>
+            </select>
+            <input class="internal-field" id="evaluation-dataset-uri" value="inline://datasets/customer-eval" title="内部评测数据引用">
             <input id="evaluation-threshold" value="0.8" title="通过阈值">
             <button class="ghost" id="refresh-models">刷新我的模型</button>
             <button class="secondary" id="register-model">登记模型</button>
@@ -742,7 +758,7 @@ const consoleHTML = `<!doctype html>
           <div class="log-toolbar">
             <div class="label">数据资产库</div>
             <input id="dataset-name" value="customer-sft-demo" title="数据集名称">
-            <input id="dataset-uri" value="inline://datasets/customer-sft-demo" title="数据集内部 URI">
+            <input class="internal-field" id="dataset-uri" value="dataset://ai-demo/customer-sft-demo/v1" title="平台内部数据集引用">
             <select id="dataset-format" title="数据格式">
               <option value="sharegpt-jsonl">ShareGPT JSONL</option>
               <option value="alpaca-jsonl">Alpaca JSONL</option>
@@ -752,7 +768,7 @@ const consoleHTML = `<!doctype html>
             <button class="secondary" id="register-dataset">登记数据集</button>
           </div>
           <div id="dataset-list" class="task-list">
-            <div class="empty">用户上传或登记数据集后，可在训练向导中“选择数据集”，平台内部再映射为 datasetURI。</div>
+            <div class="empty">用户上传或登记数据集后，可在训练向导中“选择数据集”，平台内部再映射为运行时数据引用。</div>
           </div>
           <div class="log-toolbar">
             <div class="label">生命周期操作</div>
@@ -962,6 +978,9 @@ const consoleHTML = `<!doctype html>
     var deliveryOutput = document.getElementById("delivery-output");
     var deliveryServiceName = document.getElementById("delivery-service-name");
     var deliveryServiceImage = document.getElementById("delivery-service-image");
+    var baseModelSelect = document.getElementById("baseModelSelect");
+    var serviceModelSelect = document.getElementById("serviceModelSelect");
+    var evaluationDatasetSelect = document.getElementById("evaluationDatasetSelect");
     var evaluationDatasetURI = document.getElementById("evaluation-dataset-uri");
     var evaluationThreshold = document.getElementById("evaluation-threshold");
     var trainingDatasetSelect = document.getElementById("trainingDatasetSelect");
@@ -1000,6 +1019,26 @@ const consoleHTML = `<!doctype html>
     }
     function setWizardValue(id, value) {
       wizardFields[id].value = value;
+    }
+    function setBaseModel(uri) {
+      setWizardValue("baseModelURI", uri || "");
+      if (baseModelSelect && uri) {
+        baseModelSelect.value = uri;
+      }
+    }
+    function setServiceModel(uri) {
+      setWizardValue("serviceModelURI", uri || "");
+      if (serviceModelSelect && uri) {
+        serviceModelSelect.value = uri;
+      }
+    }
+    function setEvaluationDataset(uri) {
+      if (evaluationDatasetURI) {
+        evaluationDatasetURI.value = uri || "";
+      }
+      if (evaluationDatasetSelect && uri) {
+        evaluationDatasetSelect.value = uri;
+      }
     }
     function setTrainingDataset(uri) {
       setWizardValue("trainingDataURI", uri || "");
@@ -1180,7 +1219,7 @@ const consoleHTML = `<!doctype html>
     function fillServiceForm() {
       setWizardValue("algorithmTemplate", "service");
       setWizardValue("taskDisplayName", "sentiment-demo");
-      setWizardValue("serviceModelURI", "oss://models/sentiment/v1");
+      setServiceModel("oss://models/sentiment/v1");
       setValue("kind", "AIService");
       setValue("name", "sentiment-demo");
       setValue("namespace", "ai-demo");
@@ -1201,8 +1240,8 @@ const consoleHTML = `<!doctype html>
     function fillJobForm() {
       setWizardValue("algorithmTemplate", "sft");
       setWizardValue("taskDisplayName", "customer-sft-demo");
-      setWizardValue("baseModelURI", "modelscope://qwen/Qwen2.5-0.5B");
-      setWizardValue("trainingDataURI", "inline://datasets/customer-sft-demo");
+      setBaseModel("modelscope://qwen/Qwen2.5-0.5B");
+      setTrainingDataset("inline://datasets/customer-sft-demo");
       setWizardValue("publishAfterTrain", "true");
       setValue("kind", "AIJob");
       setValue("name", "customer-sft-demo");
@@ -1422,15 +1461,17 @@ const consoleHTML = `<!doctype html>
       }
       items.forEach(function(item) {
         var uri = item.datasetURI || "";
+        var display = item.displayName || item.name || "未命名数据集";
+        var assetKey = (item.namespace || fields.namespace.value || "-") + "/" + (item.name || display || "-");
         var option = document.createElement("option");
         option.value = uri;
-        option.textContent = (item.displayName || item.name || uri) + " · " + (item.format || "unknown") + " · " + (item.status || "registered");
+        option.textContent = display + " · " + (item.format || "unknown") + " · " + (item.status || "registered");
         trainingDatasetSelect.appendChild(option);
         var row = document.createElement("div");
         row.className = "task-row";
         row.innerHTML = [
-          "<strong>" + ((item.namespace || fields.namespace.value || "-") + "/" + (item.displayName || item.name || "-")) + "</strong>",
-          "<span title=\"" + uri + "\">" + (uri || "-") + "</span>",
+          "<strong>" + display + "</strong>",
+          "<span>数据集编号：" + assetKey + "</span>",
           "<span>" + (item.purpose || "sft") + " · " + (item.format || "unknown") + "</span>",
           "<span>" + (item.status || "registered") + " · " + (item.visibility || "private") + "</span>",
           "<span><button class=\"ghost use-dataset\" type=\"button\">选择数据集</button></span>"
@@ -1460,7 +1501,7 @@ const consoleHTML = `<!doctype html>
     function registerDatasetAsset() {
       var uri = datasetURI.value || wizardFields.trainingDataURI.value || "";
       if (!uri) {
-        deliveryOutput.textContent = "请先填写或选择一个数据集内部 URI。";
+        deliveryOutput.textContent = "请先选择或登记一个数据集。";
         return Promise.resolve();
       }
       var name = slug(datasetName.value || uri);
@@ -1497,7 +1538,12 @@ const consoleHTML = `<!doctype html>
     }
     function renderModels(items) {
       modelList.innerHTML = "";
+      serviceModelSelect.innerHTML = "";
       if (!items || !items.length) {
+        var option = document.createElement("option");
+        option.value = wizardFields.serviceModelURI.value || "inline://models/customer-sft-demo/v1";
+        option.textContent = "customer-sft-demo 示例模型";
+        serviceModelSelect.appendChild(option);
         var empty = document.createElement("div");
         empty.className = "empty";
         empty.textContent = "暂无模型资产。训练完成后点击“解析训练结果”，再点击“登记模型”。";
@@ -1508,9 +1554,13 @@ const consoleHTML = `<!doctype html>
         var row = document.createElement("div");
         row.className = "task-row";
         var name = (item.namespace || fields.namespace.value || "-") + "/" + (item.name || "-");
+        var option = document.createElement("option");
+        option.value = item.modelURI || "";
+        option.textContent = (item.name || "未命名模型") + " · " + (item.status || "trained") + " · " + (item.evaluationStatus || "pending");
+        serviceModelSelect.appendChild(option);
         row.innerHTML = [
           "<strong>" + name + "</strong>",
-          "<span title=\"" + (item.modelURI || "") + "\">" + (item.modelURI || "-") + "</span>",
+          "<span>资产编号：" + name + "</span>",
           "<span>" + (item.evaluationStatus || "pending") + "</span>",
           "<span>" + (item.status || "trained") + " · " + (item.visibility || "private") + "</span>",
           "<span><button class=\"ghost eval-model\" type=\"button\">发起评测</button> <button class=\"ghost sync-eval\" type=\"button\">同步评测结果</button> <button class=\"ghost use-model\" type=\"button\">设为基础模型</button> <button class=\"secondary serve-model\" type=\"button\">发布此模型</button></span>"
@@ -1523,20 +1573,25 @@ const consoleHTML = `<!doctype html>
         };
         row.querySelector(".use-model").onclick = function() {
           setWizardValue("algorithmTemplate", "sft");
-          setWizardValue("baseModelURI", item.modelURI || "");
+          setBaseModel(item.modelURI || "");
           setWizardValue("taskDisplayName", (item.name || "model") + "-sft");
           generateYAML(true);
           lastAction.textContent = "已将模型设为基础模型";
         };
         row.querySelector(".serve-model").onclick = function() {
           setWizardValue("algorithmTemplate", "service");
-          setWizardValue("serviceModelURI", item.modelURI || "");
+          setServiceModel(item.modelURI || "");
           setWizardValue("taskDisplayName", (item.name || "model") + "-service");
           generateYAML(true);
           lastAction.textContent = "已载入发布此模型模板";
         };
         modelList.appendChild(row);
       });
+      if (wizardFields.serviceModelURI.value) {
+        serviceModelSelect.value = wizardFields.serviceModelURI.value;
+      } else if (items[0] && items[0].modelURI) {
+        setServiceModel(items[0].modelURI);
+      }
     }
     function refreshModels() {
       var ns = encodeURIComponent(fields.namespace.value || "");
@@ -2008,6 +2063,17 @@ const consoleHTML = `<!doctype html>
     document.getElementById("register-model").onclick = registerModelAsset;
     document.getElementById("refresh-datasets").onclick = refreshDatasets;
     document.getElementById("register-dataset").onclick = registerDatasetAsset;
+    baseModelSelect.onchange = function() {
+      setBaseModel(baseModelSelect.value);
+      generateYAML(true);
+    };
+    serviceModelSelect.onchange = function() {
+      setServiceModel(serviceModelSelect.value);
+      generateYAML(true);
+    };
+    evaluationDatasetSelect.onchange = function() {
+      setEvaluationDataset(evaluationDatasetSelect.value);
+    };
     trainingDatasetSelect.onchange = function() {
       setTrainingDataset(trainingDatasetSelect.value);
       generateYAML(true);
