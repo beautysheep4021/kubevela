@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	yamlv3 "go.yaml.in/yaml/v3"
 	"sigs.k8s.io/yaml"
@@ -32,14 +33,16 @@ type NormalizedObject struct {
 }
 
 type GovernanceIntent struct {
-	Framework   string          `json:"framework,omitempty"`
-	Tenant      string          `json:"tenant,omitempty"`
-	Project     string          `json:"project,omitempty"`
-	Environment string          `json:"environment,omitempty"`
-	Owner       string          `json:"owner,omitempty"`
-	ModelURI    string          `json:"modelURI,omitempty"`
-	DatasetURI  string          `json:"datasetURI,omitempty"`
-	Placement   PlacementIntent `json:"placement,omitempty"`
+	Framework   string           `json:"framework,omitempty"`
+	Tenant      string           `json:"tenant,omitempty"`
+	Project     string           `json:"project,omitempty"`
+	Environment string           `json:"environment,omitempty"`
+	Owner       string           `json:"owner,omitempty"`
+	ModelURI    string           `json:"modelURI,omitempty"`
+	DatasetURI  string           `json:"datasetURI,omitempty"`
+	Placement   PlacementIntent  `json:"placement,omitempty"`
+	Scheduling  SchedulingIntent `json:"scheduling,omitempty"`
+	Isolation   IsolationIntent  `json:"isolation,omitempty"`
 }
 
 type PlacementIntent struct {
@@ -53,9 +56,34 @@ type WorkloadIntent struct {
 }
 
 type ServiceIntent struct {
-	Replicas *int64         `json:"replicas,omitempty"`
-	Model    ModelIntent    `json:"model,omitempty"`
-	Endpoint EndpointIntent `json:"endpoint,omitempty"`
+	Replicas  *int64         `json:"replicas,omitempty"`
+	Model     ModelIntent    `json:"model,omitempty"`
+	Endpoint  EndpointIntent `json:"endpoint,omitempty"`
+	Resources ResourceIntent `json:"resources,omitempty"`
+}
+
+type ResourceIntent struct {
+	CPU    string `json:"cpu,omitempty" yaml:"cpu"`
+	Memory string `json:"memory,omitempty" yaml:"memory"`
+	GPU    string `json:"gpu,omitempty" yaml:"gpu"`
+}
+
+type SchedulingIntent struct {
+	Priority string `json:"priority,omitempty" yaml:"priority"`
+	NodeType string `json:"nodeType,omitempty" yaml:"nodeType"`
+	Strategy string `json:"strategy,omitempty" yaml:"strategy"`
+}
+
+type IsolationIntent struct {
+	TenantNamespace string           `json:"tenantNamespace,omitempty" yaml:"tenantNamespace"`
+	ResourceQuota   ResourceIntent   `json:"resourceQuota,omitempty" yaml:"resourceQuota"`
+	LimitRange      LimitRangeIntent `json:"limitRange,omitempty" yaml:"limitRange"`
+}
+
+type LimitRangeIntent struct {
+	MaxCPUPerTask    string `json:"maxCpuPerTask,omitempty" yaml:"maxCpuPerTask"`
+	MaxMemoryPerTask string `json:"maxMemoryPerTask,omitempty" yaml:"maxMemoryPerTask"`
+	MaxGPUPerTask    string `json:"maxGpuPerTask,omitempty" yaml:"maxGpuPerTask"`
 }
 
 type ModelIntent struct {
@@ -72,13 +100,14 @@ type EndpointIntent struct {
 }
 
 type JobIntent struct {
-	JobKind                 string     `json:"jobKind,omitempty"`
-	Dataset                 DatasetRef `json:"dataset,omitempty"`
-	Output                  OutputRef  `json:"output,omitempty"`
-	TTLSecondsAfterFinished *int64     `json:"ttlSecondsAfterFinished,omitempty"`
-	Parallelism             *int64     `json:"parallelism,omitempty"`
-	Completions             *int64     `json:"completions,omitempty"`
-	BackoffLimit            *int64     `json:"backoffLimit,omitempty"`
+	JobKind                 string         `json:"jobKind,omitempty"`
+	Dataset                 DatasetRef     `json:"dataset,omitempty"`
+	Output                  OutputRef      `json:"output,omitempty"`
+	TTLSecondsAfterFinished *int64         `json:"ttlSecondsAfterFinished,omitempty"`
+	Parallelism             *int64         `json:"parallelism,omitempty"`
+	Completions             *int64         `json:"completions,omitempty"`
+	BackoffLimit            *int64         `json:"backoffLimit,omitempty"`
+	Resources               ResourceIntent `json:"resources,omitempty"`
 }
 
 type DatasetRef struct {
@@ -197,13 +226,13 @@ func translateDocument(doc domainDocument, componentType string) ([]byte, error)
 	component := map[string]interface{}{
 		"name":       componentName,
 		"type":       componentType,
-		"properties": mapOrEmpty(doc.Spec.Properties),
+		"properties": componentProperties(doc),
 	}
 	if len(doc.Spec.Runtime) > 0 {
 		component["traits"] = []interface{}{
 			map[string]interface{}{
 				"type":       "ai-runtime",
-				"properties": doc.Spec.Runtime,
+				"properties": runtimeProperties(doc),
 			},
 		}
 	}
@@ -260,6 +289,9 @@ type metadata struct {
 type domainSpec struct {
 	ComponentName string                 `yaml:"componentName"`
 	Properties    map[string]interface{} `yaml:"properties"`
+	Resources     ResourceIntent         `yaml:"resources"`
+	Scheduling    SchedulingIntent       `yaml:"scheduling"`
+	Isolation     IsolationIntent        `yaml:"isolation"`
 	Runtime       map[string]interface{} `yaml:"runtime"`
 	Placement     placement              `yaml:"placement"`
 }
@@ -287,6 +319,148 @@ func mapOrEmpty(values map[string]interface{}) map[string]interface{} {
 		return map[string]interface{}{}
 	}
 	return values
+}
+
+func copyMapOrEmpty(values map[string]interface{}) map[string]interface{} {
+	out := mapOrEmpty(values)
+	copied := make(map[string]interface{}, len(out))
+	for key, value := range out {
+		copied[key] = value
+	}
+	return copied
+}
+
+func componentProperties(doc domainDocument) map[string]interface{} {
+	properties := copyMapOrEmpty(doc.Spec.Properties)
+	applyResourceIntent(properties, doc.Spec.Resources)
+	applySchedulingIntent(properties, doc.Spec.Scheduling)
+	return properties
+}
+
+func runtimeProperties(doc domainDocument) map[string]interface{} {
+	properties := copyMapOrEmpty(doc.Spec.Runtime)
+	if doc.Spec.Scheduling.Strategy != "" {
+		properties["schedulingStrategy"] = doc.Spec.Scheduling.Strategy
+	}
+	if isolation := isolationMap(doc.Spec.Isolation); len(isolation) > 0 {
+		properties["isolation"] = isolation
+	}
+	return properties
+}
+
+func applyResourceIntent(properties map[string]interface{}, resources ResourceIntent) {
+	if !resources.hasResources() {
+		return
+	}
+	resourceValues := nestedInterfaceMap(properties, "resources")
+	requests := nestedInterfaceMap(resourceValues, "requests")
+	limits := nestedInterfaceMap(resourceValues, "limits")
+	setResourceValues(requests, resources)
+	setResourceValues(limits, resources)
+	resourceValues["requests"] = requests
+	resourceValues["limits"] = limits
+	properties["resources"] = resourceValues
+}
+
+func setResourceValues(target map[string]interface{}, resources ResourceIntent) {
+	if resources.CPU != "" {
+		target["cpu"] = resources.CPU
+	}
+	if resources.Memory != "" {
+		target["memory"] = resources.Memory
+	}
+	if resources.GPU != "" && resources.GPU != "0" {
+		target["nvidia.com/gpu"] = resources.GPU
+	}
+}
+
+func applySchedulingIntent(properties map[string]interface{}, scheduling SchedulingIntent) {
+	if priorityClass := priorityClassName(scheduling.Priority); priorityClass != "" {
+		properties["priorityClassName"] = priorityClass
+	}
+	nodeType := strings.TrimSpace(scheduling.NodeType)
+	if nodeType == "" || nodeType == "any" {
+		return
+	}
+	nodeSelector := nestedInterfaceMap(properties, "nodeSelector")
+	nodeSelector["ai.oam.dev/node-type"] = nodeType
+	properties["nodeSelector"] = nodeSelector
+}
+
+func priorityClassName(priority string) string {
+	switch strings.ToLower(strings.TrimSpace(priority)) {
+	case "":
+		return ""
+	case "normal":
+		return "ai-normal"
+	case "high":
+		return "ai-high"
+	case "urgent":
+		return "ai-urgent"
+	default:
+		return priority
+	}
+}
+
+func nestedInterfaceMap(values map[string]interface{}, key string) map[string]interface{} {
+	if values == nil {
+		return map[string]interface{}{}
+	}
+	nested, ok := values[key].(map[string]interface{})
+	if !ok || nested == nil {
+		return map[string]interface{}{}
+	}
+	copied := make(map[string]interface{}, len(nested))
+	for nestedKey, nestedValue := range nested {
+		copied[nestedKey] = nestedValue
+	}
+	return copied
+}
+
+func isolationMap(isolation IsolationIntent) map[string]interface{} {
+	out := map[string]interface{}{}
+	if isolation.TenantNamespace != "" {
+		out["tenantNamespace"] = isolation.TenantNamespace
+	}
+	if resourceQuota := resourceIntentMap(isolation.ResourceQuota); len(resourceQuota) > 0 {
+		out["resourceQuota"] = resourceQuota
+	}
+	if limitRange := limitRangeMap(isolation.LimitRange); len(limitRange) > 0 {
+		out["limitRange"] = limitRange
+	}
+	return out
+}
+
+func resourceIntentMap(resources ResourceIntent) map[string]interface{} {
+	out := map[string]interface{}{}
+	if resources.CPU != "" {
+		out["cpu"] = resources.CPU
+	}
+	if resources.Memory != "" {
+		out["memory"] = resources.Memory
+	}
+	if resources.GPU != "" {
+		out["gpu"] = resources.GPU
+	}
+	return out
+}
+
+func limitRangeMap(limitRange LimitRangeIntent) map[string]interface{} {
+	out := map[string]interface{}{}
+	if limitRange.MaxCPUPerTask != "" {
+		out["maxCpuPerTask"] = limitRange.MaxCPUPerTask
+	}
+	if limitRange.MaxMemoryPerTask != "" {
+		out["maxMemoryPerTask"] = limitRange.MaxMemoryPerTask
+	}
+	if limitRange.MaxGPUPerTask != "" {
+		out["maxGpuPerTask"] = limitRange.MaxGPUPerTask
+	}
+	return out
+}
+
+func (resources ResourceIntent) hasResources() bool {
+	return resources.CPU != "" || resources.Memory != "" || resources.GPU != ""
 }
 
 func (p placement) hasPlacement() bool {
@@ -336,6 +510,8 @@ func governanceIntent(doc domainDocument) GovernanceIntent {
 			Namespace: doc.Spec.Placement.Namespace,
 			Clusters:  append([]string(nil), doc.Spec.Placement.Clusters...),
 		},
+		Scheduling: doc.Spec.Scheduling,
+		Isolation:  doc.Spec.Isolation,
 	}
 }
 
@@ -355,6 +531,7 @@ func workloadIntent(doc domainDocument, componentType string) WorkloadIntent {
 				TargetPort:  intValue(nestedMap(doc.Spec.Properties, "endpoint"), "targetPort"),
 				Type:        stringValue(nestedMap(doc.Spec.Properties, "endpoint"), "type"),
 			},
+			Resources: doc.Spec.Resources,
 		}}
 	case "ai-job":
 		return WorkloadIntent{Job: &JobIntent{
@@ -365,6 +542,7 @@ func workloadIntent(doc domainDocument, componentType string) WorkloadIntent {
 			Parallelism:             intPtr(doc.Spec.Properties, "parallelism"),
 			Completions:             intPtr(doc.Spec.Properties, "completions"),
 			BackoffLimit:            intPtr(doc.Spec.Properties, "backoffLimit"),
+			Resources:               doc.Spec.Resources,
 		}}
 	default:
 		return WorkloadIntent{}

@@ -603,6 +603,81 @@ const consoleHTML = `<!doctype html>
             <label for="serviceModelURI">内部模型引用</label>
             <input id="serviceModelURI" value="inline://models/customer-sft-demo/v1">
           </div>
+          <div class="subhead">资源与调度</div>
+          <div class="field">
+            <label for="resourceProfile">资源规格</label>
+            <select id="resourceProfile">
+              <option value="medium-gpu">中规格 单 GPU</option>
+              <option value="small-cpu">小规格 CPU</option>
+              <option value="large-gpu">大规格 多 GPU</option>
+              <option value="custom">自定义</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="resourceCPU">CPU 核数</label>
+            <input id="resourceCPU" value="8">
+          </div>
+          <div class="field">
+            <label for="resourceMemory">内存</label>
+            <input id="resourceMemory" value="32Gi">
+          </div>
+          <div class="field">
+            <label for="resourceGPU">GPU 数量</label>
+            <input id="resourceGPU" value="1">
+          </div>
+          <div class="field">
+            <label for="schedulingPriority">调度优先级</label>
+            <select id="schedulingPriority">
+              <option value="high">高优先级</option>
+              <option value="normal">普通优先级</option>
+              <option value="urgent">紧急优先级</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="schedulingNodeType">节点类型</label>
+            <select id="schedulingNodeType">
+              <option value="gpu">GPU 节点</option>
+              <option value="cpu">CPU 节点</option>
+              <option value="any">不限节点</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="schedulingStrategy">调度策略</label>
+            <select id="schedulingStrategy">
+              <option value="performance">性能优先</option>
+              <option value="cost">成本优先</option>
+              <option value="fast-start">快速启动</option>
+            </select>
+          </div>
+          <div class="subhead">租户资源隔离</div>
+          <div class="field">
+            <label for="tenantNamespace">租户命名空间</label>
+            <input id="tenantNamespace" value="sock-shop">
+          </div>
+          <div class="field">
+            <label for="quotaCPU">CPU 配额</label>
+            <input id="quotaCPU" value="32">
+          </div>
+          <div class="field">
+            <label for="quotaMemory">内存配额</label>
+            <input id="quotaMemory" value="128Gi">
+          </div>
+          <div class="field">
+            <label for="quotaGPU">GPU 配额</label>
+            <input id="quotaGPU" value="4">
+          </div>
+          <div class="field">
+            <label for="maxTaskCPU">单任务最大 CPU</label>
+            <input id="maxTaskCPU" value="8">
+          </div>
+          <div class="field">
+            <label for="maxTaskMemory">单任务最大内存</label>
+            <input id="maxTaskMemory" value="32Gi">
+          </div>
+          <div class="field">
+            <label for="maxTaskGPU">单任务最大 GPU</label>
+            <input id="maxTaskGPU" value="1">
+          </div>
         </div>
         <details class="advanced-config">
           <summary>高级配置：查看和调整底层 AIJob / AIService 字段</summary>
@@ -1002,7 +1077,7 @@ const consoleHTML = `<!doctype html>
       monitorFields[id] = document.getElementById(id);
     });
     var wizardFields = {};
-    ["algorithmTemplate", "taskDisplayName", "baseModelURI", "trainingDataURI", "trainingSize", "publishAfterTrain", "epochs", "learningRate", "serviceModelURI"].forEach(function(id) {
+    ["algorithmTemplate", "taskDisplayName", "baseModelURI", "trainingDataURI", "trainingSize", "publishAfterTrain", "epochs", "learningRate", "serviceModelURI", "resourceProfile", "resourceCPU", "resourceMemory", "resourceGPU", "schedulingPriority", "schedulingNodeType", "schedulingStrategy", "tenantNamespace", "quotaCPU", "quotaMemory", "quotaGPU", "maxTaskCPU", "maxTaskMemory", "maxTaskGPU"].forEach(function(id) {
       wizardFields[id] = document.getElementById(id);
     });
     var fields = {};
@@ -1019,6 +1094,24 @@ const consoleHTML = `<!doctype html>
     }
     function setWizardValue(id, value) {
       wizardFields[id].value = value;
+    }
+    function applyResourceProfile(profile) {
+      var presets = {
+        "small-cpu": {cpu: "2", memory: "4Gi", gpu: "0", priority: "normal", nodeType: "cpu", strategy: "cost", maxCPU: "2", maxMemory: "4Gi", maxGPU: "0"},
+        "medium-gpu": {cpu: "8", memory: "32Gi", gpu: "1", priority: "high", nodeType: "gpu", strategy: "performance", maxCPU: "8", maxMemory: "32Gi", maxGPU: "1"},
+        "large-gpu": {cpu: "16", memory: "64Gi", gpu: "4", priority: "urgent", nodeType: "gpu", strategy: "performance", maxCPU: "16", maxMemory: "64Gi", maxGPU: "4"}
+      };
+      var preset = presets[profile];
+      if (!preset) return;
+      setWizardValue("resourceCPU", preset.cpu);
+      setWizardValue("resourceMemory", preset.memory);
+      setWizardValue("resourceGPU", preset.gpu);
+      setWizardValue("schedulingPriority", preset.priority);
+      setWizardValue("schedulingNodeType", preset.nodeType);
+      setWizardValue("schedulingStrategy", preset.strategy);
+      setWizardValue("maxTaskCPU", preset.maxCPU);
+      setWizardValue("maxTaskMemory", preset.maxMemory);
+      setWizardValue("maxTaskGPU", preset.maxGPU);
     }
     function setBaseModel(uri) {
       setWizardValue("baseModelURI", uri || "");
@@ -1082,10 +1175,11 @@ const consoleHTML = `<!doctype html>
       var template = wizardFields.algorithmTemplate.value;
       var taskName = slug(wizardFields.taskDisplayName.value);
       setActiveTemplate(template);
+      var namespace = wizardFields.tenantNamespace.value || fields.namespace.value || "sock-shop";
       if (template === "service") {
         setValue("kind", "AIService");
         setValue("name", taskName || "model-service-demo");
-        setValue("namespace", fields.namespace.value || "sock-shop");
+        setValue("namespace", namespace);
         setValue("component", taskName || "model-service");
         setValue("tenant", fields.tenant.value || "demo-tenant");
         setValue("project", fields.project.value || "model-serving");
@@ -1103,7 +1197,7 @@ const consoleHTML = `<!doctype html>
       var project = template === "evaluation" ? "model-evaluation" : "sft-training";
       setValue("kind", "AIJob");
       setValue("name", taskName || "customer-sft-demo");
-      setValue("namespace", fields.namespace.value || "sock-shop");
+      setValue("namespace", namespace);
       setValue("component", taskName ? taskName + "-trainer" : "sft-trainer");
       setValue("tenant", fields.tenant.value || "demo-tenant");
       setValue("project", project);
@@ -1193,6 +1287,26 @@ const consoleHTML = `<!doctype html>
         ]);
       }
       common = common.concat([
+        line("resources", "", 2),
+        line("cpu", wizardFields.resourceCPU.value, 4),
+        line("memory", wizardFields.resourceMemory.value, 4),
+        line("gpu", wizardFields.resourceGPU.value, 4),
+        line("scheduling", "", 2),
+        line("priority", wizardFields.schedulingPriority.value, 4),
+        line("nodeType", wizardFields.schedulingNodeType.value, 4),
+        line("strategy", wizardFields.schedulingStrategy.value, 4),
+        line("isolation", "", 2),
+        line("tenantNamespace", wizardFields.tenantNamespace.value || fields.namespace.value, 4),
+        "    resourceQuota:",
+        line("cpu", wizardFields.quotaCPU.value, 6),
+        line("memory", wizardFields.quotaMemory.value, 6),
+        line("gpu", wizardFields.quotaGPU.value, 6),
+        "    limitRange:",
+        line("maxCpuPerTask", wizardFields.maxTaskCPU.value, 6),
+        line("maxMemoryPerTask", wizardFields.maxTaskMemory.value, 6),
+        line("maxGpuPerTask", wizardFields.maxTaskGPU.value, 6)
+      ]);
+      common = common.concat([
         "  runtime:",
         line("runtime", fields.runtime.value, 4),
         "    framework: demo",
@@ -1220,6 +1334,9 @@ const consoleHTML = `<!doctype html>
       setWizardValue("algorithmTemplate", "service");
       setWizardValue("taskDisplayName", "sentiment-demo");
       setServiceModel("oss://models/sentiment/v1");
+      setWizardValue("resourceProfile", "small-cpu");
+      applyResourceProfile("small-cpu");
+      setWizardValue("tenantNamespace", "ai-demo");
       setValue("kind", "AIService");
       setValue("name", "sentiment-demo");
       setValue("namespace", "ai-demo");
@@ -1243,6 +1360,9 @@ const consoleHTML = `<!doctype html>
       setBaseModel("modelscope://qwen/Qwen2.5-0.5B");
       setTrainingDataset("inline://datasets/customer-sft-demo");
       setWizardValue("publishAfterTrain", "true");
+      setWizardValue("resourceProfile", "medium-gpu");
+      applyResourceProfile("medium-gpu");
+      setWizardValue("tenantNamespace", "sock-shop");
       setValue("kind", "AIJob");
       setValue("name", "customer-sft-demo");
       setValue("namespace", "sock-shop");
@@ -2016,7 +2136,12 @@ const consoleHTML = `<!doctype html>
     };
     Object.keys(wizardFields).forEach(function(id) {
       wizardFields[id].addEventListener("input", function() { generateYAML(true); });
-      wizardFields[id].addEventListener("change", function() { generateYAML(true); });
+      wizardFields[id].addEventListener("change", function() {
+        if (id === "resourceProfile") {
+          applyResourceProfile(wizardFields.resourceProfile.value);
+        }
+        generateYAML(true);
+      });
     });
     Object.keys(fields).forEach(function(id) {
       fields[id].addEventListener("input", function() { generateYAML(false); });

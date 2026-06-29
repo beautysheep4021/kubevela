@@ -33,6 +33,12 @@ template: {
 			if parameter.owner != _|_ {
 				"ai.oam.dev/owner": parameter.owner
 			}
+            if parameter.schedulingStrategy != _|_ {
+                "ai.oam.dev/scheduling-strategy": parameter.schedulingStrategy
+			}
+            if parameter.isolation.tenantNamespace != _|_ {
+                "ai.oam.dev/isolation-tenant-namespace": parameter.isolation.tenantNamespace
+			}
 		}
 
 		if context.output.spec != _|_ if context.output.spec.template != _|_ {
@@ -60,5 +66,21 @@ template: {
 		datasetURI?: string
 		// +usage=Owning team or project
 		owner?: string
+        // +usage=Scheduling strategy selected by the platform user
+        schedulingStrategy?: string
+        // +usage=Tenant isolation intent recorded for policy and audit integration
+        isolation?: {
+            tenantNamespace?: string
+            resourceQuota?: {
+                cpu?: string
+                memory?: string
+                gpu?: string
+			}
+            limitRange?: {
+                maxCpuPerTask?: string
+                maxMemoryPerTask?: string
+                maxGpuPerTask?: string
+			}
+		}
 	}
 }

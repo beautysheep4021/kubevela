@@ -101,6 +101,64 @@ spec:
 	assertStringField(t, out, "deploy", "spec", "workflow", "steps", "0", "type")
 }
 
+func TestTranslateAIJobAppliesResourceSchedulingAndIsolationHints(t *testing.T) {
+	out := translate(t, []byte(`
+apiVersion: ai.oam.dev/v1alpha1
+kind: AIJob
+metadata:
+  name: scheduled-trainer
+  namespace: tenant-a
+spec:
+  componentName: trainer
+  properties:
+    image: busybox:1.36
+    jobKind: training
+    dataset:
+      uri: inline://datasets/customer-sft
+    output:
+      uri: inline://outputs/customer-sft
+  resources:
+    cpu: "8"
+    memory: 32Gi
+    gpu: "1"
+  scheduling:
+    priority: high
+    nodeType: gpu
+    strategy: performance
+  isolation:
+    tenantNamespace: tenant-a
+    resourceQuota:
+      cpu: "32"
+      memory: 128Gi
+      gpu: "4"
+    limitRange:
+      maxCpuPerTask: "8"
+      maxMemoryPerTask: 32Gi
+      maxGpuPerTask: "1"
+  runtime:
+    runtime: batch
+    tenant: tenant-a
+    project: sft-training
+`))
+
+	assertStringField(t, out, "8", "spec", "components", "0", "properties", "resources", "requests", "cpu")
+	assertStringField(t, out, "32Gi", "spec", "components", "0", "properties", "resources", "requests", "memory")
+	assertStringField(t, out, "1", "spec", "components", "0", "properties", "resources", "requests", "nvidia.com/gpu")
+	assertStringField(t, out, "8", "spec", "components", "0", "properties", "resources", "limits", "cpu")
+	assertStringField(t, out, "32Gi", "spec", "components", "0", "properties", "resources", "limits", "memory")
+	assertStringField(t, out, "1", "spec", "components", "0", "properties", "resources", "limits", "nvidia.com/gpu")
+	assertStringField(t, out, "ai-high", "spec", "components", "0", "properties", "priorityClassName")
+	assertStringField(t, out, "gpu", "spec", "components", "0", "properties", "nodeSelector", "ai.oam.dev/node-type")
+	assertStringField(t, out, "performance", "spec", "components", "0", "traits", "0", "properties", "schedulingStrategy")
+	assertStringField(t, out, "tenant-a", "spec", "components", "0", "traits", "0", "properties", "isolation", "tenantNamespace")
+	assertStringField(t, out, "32", "spec", "components", "0", "traits", "0", "properties", "isolation", "resourceQuota", "cpu")
+	assertStringField(t, out, "128Gi", "spec", "components", "0", "traits", "0", "properties", "isolation", "resourceQuota", "memory")
+	assertStringField(t, out, "4", "spec", "components", "0", "traits", "0", "properties", "isolation", "resourceQuota", "gpu")
+	assertStringField(t, out, "8", "spec", "components", "0", "traits", "0", "properties", "isolation", "limitRange", "maxCpuPerTask")
+	assertStringField(t, out, "32Gi", "spec", "components", "0", "traits", "0", "properties", "isolation", "limitRange", "maxMemoryPerTask")
+	assertStringField(t, out, "1", "spec", "components", "0", "traits", "0", "properties", "isolation", "limitRange", "maxGpuPerTask")
+}
+
 func TestNormalizeAIServiceExtractsGovernanceIntent(t *testing.T) {
 	normalized := normalize(t, []byte(`
 apiVersion: ai.oam.dev/v1alpha1
@@ -206,6 +264,62 @@ spec:
 		normalized.WorkloadIntent.Job.TTLSecondsAfterFinished == nil ||
 		*normalized.WorkloadIntent.Job.TTLSecondsAfterFinished != 300 {
 		t.Fatalf("unexpected job workload intent: %#v", normalized.WorkloadIntent.Job)
+	}
+}
+
+func TestNormalizeAIJobExtractsResourceSchedulingAndIsolationIntent(t *testing.T) {
+	normalized := normalize(t, []byte(`
+apiVersion: ai.oam.dev/v1alpha1
+kind: AIJob
+metadata:
+  name: scheduled-trainer
+spec:
+  componentName: trainer
+  properties:
+    image: busybox:1.36
+    jobKind: training
+  resources:
+    cpu: "8"
+    memory: 32Gi
+    gpu: "1"
+  scheduling:
+    priority: high
+    nodeType: gpu
+    strategy: performance
+  isolation:
+    tenantNamespace: tenant-a
+    resourceQuota:
+      cpu: "32"
+      memory: 128Gi
+      gpu: "4"
+    limitRange:
+      maxCpuPerTask: "8"
+      maxMemoryPerTask: 32Gi
+      maxGpuPerTask: "1"
+  runtime:
+    runtime: batch
+    tenant: tenant-a
+    project: sft-training
+`))
+	normalizedJSON := normalizedAsMap(t, normalized)
+
+	if got := nestedValue(t, normalizedJSON, "governanceIntent", "scheduling", "priority"); got != "high" {
+		t.Fatalf("scheduling priority = %v, want high", got)
+	}
+	if got := nestedValue(t, normalizedJSON, "governanceIntent", "scheduling", "nodeType"); got != "gpu" {
+		t.Fatalf("scheduling nodeType = %v, want gpu", got)
+	}
+	if got := nestedValue(t, normalizedJSON, "governanceIntent", "scheduling", "strategy"); got != "performance" {
+		t.Fatalf("scheduling strategy = %v, want performance", got)
+	}
+	if got := nestedValue(t, normalizedJSON, "governanceIntent", "isolation", "tenantNamespace"); got != "tenant-a" {
+		t.Fatalf("isolation tenantNamespace = %v, want tenant-a", got)
+	}
+	if got := nestedValue(t, normalizedJSON, "governanceIntent", "isolation", "resourceQuota", "gpu"); got != "4" {
+		t.Fatalf("resourceQuota gpu = %v, want 4", got)
+	}
+	if got := nestedValue(t, normalizedJSON, "workloadIntent", "job", "resources", "gpu"); got != "1" {
+		t.Fatalf("job resource gpu = %v, want 1", got)
 	}
 }
 
@@ -429,6 +543,19 @@ func decodeApplication(t *testing.T, out []byte) *unstructured.Unstructured {
 		t.Fatalf("failed to decode translated YAML: %v\n%s", err, string(out))
 	}
 	return obj
+}
+
+func normalizedAsMap(t *testing.T, normalized domain.NormalizedObject) map[string]interface{} {
+	t.Helper()
+	content, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatalf("marshal normalized object: %v", err)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(content, &out); err != nil {
+		t.Fatalf("decode normalized object: %v", err)
+	}
+	return out
 }
 
 func projectRoot(t *testing.T) string {

@@ -89,6 +89,9 @@ func TestAIExtensionDefinitionsUseKubeVelaNativeModel(t *testing.T) {
 			`serviceAccountName?: string`,
 			`imagePullSecrets?: [...{`,
 			`priorityClassName?: string`,
+			`if parameter.nodeSelector != _|_ {`,
+			`nodeSelector: parameter.nodeSelector`,
+			`nodeSelector?: [string]: string`,
 			`runtimeClassName?: string`,
 			`schedulerName?: string`,
 			`valueFrom?: {...}`,
@@ -121,6 +124,9 @@ func TestAIExtensionDefinitionsUseKubeVelaNativeModel(t *testing.T) {
 			`serviceAccountName?: string`,
 			`imagePullSecrets?: [...{`,
 			`priorityClassName?: string`,
+			`if parameter.nodeSelector != _|_ {`,
+			`nodeSelector: parameter.nodeSelector`,
+			`nodeSelector?: [string]: string`,
 			`runtimeClassName?: string`,
 			`schedulerName?: string`,
 			`valueFrom?: {...}`,
@@ -172,6 +178,12 @@ func TestAIExtensionDefinitionsUseKubeVelaNativeModel(t *testing.T) {
 		`"ai.oam.dev/environment"`,
 		`"ai.oam.dev/model-uri"`,
 		`"ai.oam.dev/dataset-uri"`,
+		`"ai.oam.dev/scheduling-strategy"`,
+		`"ai.oam.dev/isolation-tenant-namespace"`,
+		`schedulingStrategy?: string`,
+		`isolation?: {`,
+		`resourceQuota?: {`,
+		`limitRange?: {`,
 	} {
 		if !strings.Contains(runtimeTrait, fragment) {
 			t.Fatalf("expected ai-runtime trait to contain %q", fragment)

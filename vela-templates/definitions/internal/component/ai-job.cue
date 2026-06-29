@@ -93,6 +93,9 @@ template: {
 					if parameter.imagePullSecrets != _|_ {
 						imagePullSecrets: parameter.imagePullSecrets
 					}
+                    if parameter.nodeSelector != _|_ {
+                        nodeSelector: parameter.nodeSelector
+					}
 					if parameter.priorityClassName != _|_ {
 						priorityClassName: parameter.priorityClassName
 					}
@@ -172,6 +175,8 @@ template: {
 		imagePullSecrets?: [...{
 			name: string
 		}]
+        // +usage=Node labels required by the AI job pods
+        nodeSelector?: [string]: string
 		// +usage=Priority class name used by the AI job pods
 		priorityClassName?: string
 		// +usage=Runtime class name used by the AI job pods
