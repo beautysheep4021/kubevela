@@ -56,6 +56,9 @@ func TestServerServesConsolePage(t *testing.T) {
 		"评测数据集",
 		"训练规格",
 		"资源与调度",
+		"调度策略模板",
+		"当前调度映射",
+		"策略说明",
 		"资源规格",
 		"CPU 核数",
 		"内存",
@@ -69,6 +72,10 @@ func TestServerServesConsolePage(t *testing.T) {
 		"内存配额",
 		"GPU 配额",
 		"单任务最大 GPU",
+		"resources.requests/limits",
+		"priorityClassName",
+		"nodeSelector",
+		"ai-runtime.schedulingStrategy",
 		"训练完成后自动发布为服务",
 		"高级配置",
 		"领域 YAML",
@@ -156,6 +163,10 @@ func TestConsoleGeneratedAIJobIncludesDeliveryResultMarker(t *testing.T) {
 		"line(\"tenantNamespace\", wizardFields.tenantNamespace.value || fields.namespace.value, 4)",
 		"function looksLikeModelVersion",
 		"function applyResourceProfile",
+		"function applySchedulingPolicyTemplate",
+		"function renderSchedulingPolicyExplanation",
+		"\"gpu-dedicated\"",
+		"wizardFields.schedulingPolicyTemplate.value",
 	} {
 		if !strings.Contains(consoleHTML, expected) {
 			t.Fatalf("console AIJob generator missing %q", expected)

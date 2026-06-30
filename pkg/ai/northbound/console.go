@@ -276,6 +276,23 @@ const consoleHTML = `<!doctype html>
       font-size: 15px;
       font-weight: 900;
     }
+    .scheduling-explainer {
+      grid-column: 1 / -1;
+      display: grid;
+      gap: 8px;
+      padding: 12px 14px;
+      border: 1px solid rgba(49, 70, 95, .16);
+      border-radius: 14px;
+      color: var(--muted);
+      background: rgba(255,255,255,.56);
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-line;
+    }
+    .scheduling-explainer strong {
+      color: var(--ink);
+      font-size: 13px;
+    }
     .yaml-preview {
       padding: 0 18px 18px;
     }
@@ -604,6 +621,23 @@ const consoleHTML = `<!doctype html>
             <input id="serviceModelURI" value="inline://models/customer-sft-demo/v1">
           </div>
           <div class="subhead">资源与调度</div>
+          <div class="field wide">
+            <label for="schedulingPolicyTemplate">调度策略模板</label>
+            <select id="schedulingPolicyTemplate">
+              <option value="performance">性能优先</option>
+              <option value="cost-efficient">成本优先</option>
+              <option value="fast-start">快速启动</option>
+              <option value="gpu-dedicated">GPU 专用</option>
+            </select>
+          </div>
+          <div class="scheduling-explainer" id="schedulingPolicyExplanation">
+            <strong>当前调度映射</strong>
+            策略说明：性能优先模板会优先选择 GPU 节点并提高任务优先级。
+            resources.requests/limits：CPU 8 / 内存 32Gi / GPU 1
+            priorityClassName：ai-high
+            nodeSelector：ai.oam.dev/node-type=gpu
+            ai-runtime.schedulingStrategy：performance
+          </div>
           <div class="field">
             <label for="resourceProfile">资源规格</label>
             <select id="resourceProfile">
@@ -1072,12 +1106,13 @@ const consoleHTML = `<!doctype html>
     var monitorOutput = document.getElementById("monitor-output");
     var monitorAction = document.getElementById("monitor-action");
     var auditList = document.getElementById("audit-list");
+    var schedulingPolicyExplanation = document.getElementById("schedulingPolicyExplanation");
     var monitorFields = {};
     ["monitorNamespace", "monitorType", "monitorTenant", "monitorProject", "monitorEnvironment", "monitorHealth"].forEach(function(id) {
       monitorFields[id] = document.getElementById(id);
     });
     var wizardFields = {};
-    ["algorithmTemplate", "taskDisplayName", "baseModelURI", "trainingDataURI", "trainingSize", "publishAfterTrain", "epochs", "learningRate", "serviceModelURI", "resourceProfile", "resourceCPU", "resourceMemory", "resourceGPU", "schedulingPriority", "schedulingNodeType", "schedulingStrategy", "tenantNamespace", "quotaCPU", "quotaMemory", "quotaGPU", "maxTaskCPU", "maxTaskMemory", "maxTaskGPU"].forEach(function(id) {
+    ["algorithmTemplate", "taskDisplayName", "baseModelURI", "trainingDataURI", "trainingSize", "publishAfterTrain", "epochs", "learningRate", "serviceModelURI", "schedulingPolicyTemplate", "resourceProfile", "resourceCPU", "resourceMemory", "resourceGPU", "schedulingPriority", "schedulingNodeType", "schedulingStrategy", "tenantNamespace", "quotaCPU", "quotaMemory", "quotaGPU", "maxTaskCPU", "maxTaskMemory", "maxTaskGPU"].forEach(function(id) {
       wizardFields[id] = document.getElementById(id);
     });
     var fields = {};
@@ -1095,14 +1130,7 @@ const consoleHTML = `<!doctype html>
     function setWizardValue(id, value) {
       wizardFields[id].value = value;
     }
-    function applyResourceProfile(profile) {
-      var presets = {
-        "small-cpu": {cpu: "2", memory: "4Gi", gpu: "0", priority: "normal", nodeType: "cpu", strategy: "cost", maxCPU: "2", maxMemory: "4Gi", maxGPU: "0"},
-        "medium-gpu": {cpu: "8", memory: "32Gi", gpu: "1", priority: "high", nodeType: "gpu", strategy: "performance", maxCPU: "8", maxMemory: "32Gi", maxGPU: "1"},
-        "large-gpu": {cpu: "16", memory: "64Gi", gpu: "4", priority: "urgent", nodeType: "gpu", strategy: "performance", maxCPU: "16", maxMemory: "64Gi", maxGPU: "4"}
-      };
-      var preset = presets[profile];
-      if (!preset) return;
+    function applySchedulingPreset(preset) {
       setWizardValue("resourceCPU", preset.cpu);
       setWizardValue("resourceMemory", preset.memory);
       setWizardValue("resourceGPU", preset.gpu);
@@ -1112,6 +1140,59 @@ const consoleHTML = `<!doctype html>
       setWizardValue("maxTaskCPU", preset.maxCPU);
       setWizardValue("maxTaskMemory", preset.maxMemory);
       setWizardValue("maxTaskGPU", preset.maxGPU);
+    }
+    function resourceProfilePresets() {
+      return {
+        "small-cpu": {cpu: "2", memory: "4Gi", gpu: "0", priority: "normal", nodeType: "cpu", strategy: "cost", maxCPU: "2", maxMemory: "4Gi", maxGPU: "0"},
+        "medium-gpu": {cpu: "8", memory: "32Gi", gpu: "1", priority: "high", nodeType: "gpu", strategy: "performance", maxCPU: "8", maxMemory: "32Gi", maxGPU: "1"},
+        "large-gpu": {cpu: "16", memory: "64Gi", gpu: "4", priority: "urgent", nodeType: "gpu", strategy: "performance", maxCPU: "16", maxMemory: "64Gi", maxGPU: "4"}
+      };
+    }
+    function applyResourceProfile(profile) {
+      var preset = resourceProfilePresets()[profile];
+      if (!preset) return;
+      applySchedulingPreset(preset);
+    }
+    function applySchedulingPolicyTemplate(template) {
+      var templates = {
+        "cost-efficient": {profile: "small-cpu", cpu: "2", memory: "4Gi", gpu: "0", priority: "normal", nodeType: "cpu", strategy: "cost", maxCPU: "2", maxMemory: "4Gi", maxGPU: "0"},
+        "performance": {profile: "medium-gpu", cpu: "8", memory: "32Gi", gpu: "1", priority: "high", nodeType: "gpu", strategy: "performance", maxCPU: "8", maxMemory: "32Gi", maxGPU: "1"},
+        "fast-start": {profile: "custom", cpu: "4", memory: "8Gi", gpu: "0", priority: "high", nodeType: "any", strategy: "fast-start", maxCPU: "4", maxMemory: "8Gi", maxGPU: "0"},
+        "gpu-dedicated": {profile: "large-gpu", cpu: "16", memory: "64Gi", gpu: "4", priority: "urgent", nodeType: "gpu", strategy: "performance", maxCPU: "16", maxMemory: "64Gi", maxGPU: "4"}
+      };
+      var preset = templates[template];
+      if (!preset) return;
+      setWizardValue("resourceProfile", preset.profile);
+      applySchedulingPreset(preset);
+    }
+    function schedulingPriorityClassName(priority) {
+      var value = (priority || "").trim().toLowerCase();
+      if (value === "normal") return "ai-normal";
+      if (value === "high") return "ai-high";
+      if (value === "urgent") return "ai-urgent";
+      return priority || "-";
+    }
+    function schedulingPolicyDescription(template) {
+      var descriptions = {
+        "cost-efficient": "成本优先模板会选择 CPU 节点和普通优先级，适合可排队、对 GPU 不敏感的训练或评测。",
+        "performance": "性能优先模板会优先选择 GPU 节点并提高任务优先级，适合常规微调训练。",
+        "fast-start": "快速启动模板不限制节点类型并提高优先级，适合希望尽快进入运行态的轻量任务。",
+        "gpu-dedicated": "GPU 专用模板会使用多卡资源和紧急优先级，适合高吞吐训练或关键模型交付。"
+      };
+      return descriptions[template] || "按当前资源和调度字段生成映射。";
+    }
+    function renderSchedulingPolicyExplanation() {
+      if (!schedulingPolicyExplanation) return;
+      var nodeType = wizardFields.schedulingNodeType.value;
+      var nodeSelector = nodeType && nodeType !== "any" ? "ai.oam.dev/node-type=" + nodeType : "不限节点";
+      schedulingPolicyExplanation.textContent = [
+        "当前调度映射",
+        "策略说明：" + schedulingPolicyDescription(wizardFields.schedulingPolicyTemplate.value),
+        "resources.requests/limits：CPU " + wizardFields.resourceCPU.value + " / 内存 " + wizardFields.resourceMemory.value + " / GPU " + wizardFields.resourceGPU.value,
+        "priorityClassName：" + schedulingPriorityClassName(wizardFields.schedulingPriority.value),
+        "nodeSelector：" + nodeSelector,
+        "ai-runtime.schedulingStrategy：" + wizardFields.schedulingStrategy.value
+      ].join("\n");
     }
     function setBaseModel(uri) {
       setWizardValue("baseModelURI", uri || "");
@@ -1329,11 +1410,13 @@ const consoleHTML = `<!doctype html>
       }
       syncVisibility();
       yaml.value = buildYAML();
+      renderSchedulingPolicyExplanation();
     }
     function fillServiceForm() {
       setWizardValue("algorithmTemplate", "service");
       setWizardValue("taskDisplayName", "sentiment-demo");
       setServiceModel("oss://models/sentiment/v1");
+      setWizardValue("schedulingPolicyTemplate", "cost-efficient");
       setWizardValue("resourceProfile", "small-cpu");
       applyResourceProfile("small-cpu");
       setWizardValue("tenantNamespace", "ai-demo");
@@ -1360,6 +1443,7 @@ const consoleHTML = `<!doctype html>
       setBaseModel("modelscope://qwen/Qwen2.5-0.5B");
       setTrainingDataset("inline://datasets/customer-sft-demo");
       setWizardValue("publishAfterTrain", "true");
+      setWizardValue("schedulingPolicyTemplate", "performance");
       setWizardValue("resourceProfile", "medium-gpu");
       applyResourceProfile("medium-gpu");
       setWizardValue("tenantNamespace", "sock-shop");
@@ -2137,6 +2221,9 @@ const consoleHTML = `<!doctype html>
     Object.keys(wizardFields).forEach(function(id) {
       wizardFields[id].addEventListener("input", function() { generateYAML(true); });
       wizardFields[id].addEventListener("change", function() {
+        if (id === "schedulingPolicyTemplate") {
+          applySchedulingPolicyTemplate(wizardFields.schedulingPolicyTemplate.value);
+        }
         if (id === "resourceProfile") {
           applyResourceProfile(wizardFields.resourceProfile.value);
         }
