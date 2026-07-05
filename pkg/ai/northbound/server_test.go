@@ -174,6 +174,26 @@ func TestConsoleGeneratedAIJobIncludesDeliveryResultMarker(t *testing.T) {
 	}
 }
 
+func TestConsoleShowsAndEnforcesIsolationPolicy(t *testing.T) {
+	for _, expected := range []string{
+		"隔离策略预览",
+		"id=\"isolationPolicyPreview\"",
+		"Namespace：",
+		"ResourceQuota：",
+		"LimitRange：",
+		"配额校验：",
+		"function renderIsolationPolicyPreview",
+		"function validateIsolationPolicy",
+		"资源隔离校验未通过",
+		"validateIsolationPolicy()",
+		"parseComputeQuantity",
+	} {
+		if !strings.Contains(consoleHTML, expected) {
+			t.Fatalf("console isolation policy enforcement missing %q", expected)
+		}
+	}
+}
+
 func TestConsoleKeepsUserAssetPathsAwayFromRawURIs(t *testing.T) {
 	for _, forbidden := range []string{
 		"datasetURI。</div>",

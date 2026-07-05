@@ -293,6 +293,15 @@ const consoleHTML = `<!doctype html>
       color: var(--ink);
       font-size: 13px;
     }
+    .scheduling-explainer.policy-ok {
+      border-color: rgba(37, 107, 95, .28);
+      background: rgba(240, 250, 246, .82);
+    }
+    .scheduling-explainer.policy-warn {
+      border-color: rgba(180, 73, 63, .34);
+      background: rgba(255, 244, 239, .86);
+      color: #7a392e;
+    }
     .yaml-preview {
       padding: 0 18px 18px;
     }
@@ -712,6 +721,13 @@ const consoleHTML = `<!doctype html>
             <label for="maxTaskGPU">单任务最大 GPU</label>
             <input id="maxTaskGPU" value="1">
           </div>
+          <div class="scheduling-explainer policy-ok" id="isolationPolicyPreview">
+            <strong>隔离策略预览</strong>
+            Namespace：sock-shop
+            ResourceQuota：CPU 32 / 内存 128Gi / GPU 4
+            LimitRange：单任务 CPU 8 / 内存 32Gi / GPU 1
+            配额校验：当前申请资源在租户配额和单任务上限内。
+          </div>
         </div>
         <details class="advanced-config">
           <summary>高级配置：查看和调整底层 AIJob / AIService 字段</summary>
@@ -1107,6 +1123,7 @@ const consoleHTML = `<!doctype html>
     var monitorAction = document.getElementById("monitor-action");
     var auditList = document.getElementById("audit-list");
     var schedulingPolicyExplanation = document.getElementById("schedulingPolicyExplanation");
+    var isolationPolicyPreview = document.getElementById("isolationPolicyPreview");
     var monitorFields = {};
     ["monitorNamespace", "monitorType", "monitorTenant", "monitorProject", "monitorEnvironment", "monitorHealth"].forEach(function(id) {
       monitorFields[id] = document.getElementById(id);
@@ -1193,6 +1210,62 @@ const consoleHTML = `<!doctype html>
         "nodeSelector：" + nodeSelector,
         "ai-runtime.schedulingStrategy：" + wizardFields.schedulingStrategy.value
       ].join("\n");
+    }
+    function parseComputeQuantity(value) {
+      var raw = (value || "").trim();
+      if (!raw) return null;
+      var match = raw.match(/^([0-9]+(?:\.[0-9]+)?)(m|mi|gi|ti)?$/i);
+      if (!match) return null;
+      var amount = parseFloat(match[1]);
+      if (isNaN(amount)) return null;
+      var unit = (match[2] || "").toLowerCase();
+      if (unit === "m") return amount / 1000;
+      if (unit === "mi") return amount / 1024;
+      if (unit === "gi" || unit === "") return amount;
+      if (unit === "ti") return amount * 1024;
+      return null;
+    }
+    function resourceLimitViolation(label, requested, limit) {
+      var requestedValue = parseComputeQuantity(requested);
+      var limitValue = parseComputeQuantity(limit);
+      if (requestedValue === null || limitValue === null || !limit) {
+        return "";
+      }
+      if (requestedValue > limitValue) {
+        return label + " 申请 " + requested + " 超过上限 " + limit;
+      }
+      return "";
+    }
+    function isolationPolicyIssues() {
+      var issues = [
+        resourceLimitViolation("CPU", wizardFields.resourceCPU.value, wizardFields.maxTaskCPU.value),
+        resourceLimitViolation("内存", wizardFields.resourceMemory.value, wizardFields.maxTaskMemory.value),
+        resourceLimitViolation("GPU", wizardFields.resourceGPU.value, wizardFields.maxTaskGPU.value),
+        resourceLimitViolation("CPU", wizardFields.resourceCPU.value, wizardFields.quotaCPU.value),
+        resourceLimitViolation("内存", wizardFields.resourceMemory.value, wizardFields.quotaMemory.value),
+        resourceLimitViolation("GPU", wizardFields.resourceGPU.value, wizardFields.quotaGPU.value)
+      ];
+      return issues.filter(function(item) { return !!item; });
+    }
+    function renderIsolationPolicyPreview() {
+      if (!isolationPolicyPreview) return;
+      var issues = isolationPolicyIssues();
+      isolationPolicyPreview.className = "scheduling-explainer " + (issues.length ? "policy-warn" : "policy-ok");
+      isolationPolicyPreview.textContent = [
+        "隔离策略预览",
+        "Namespace：" + (wizardFields.tenantNamespace.value || fields.namespace.value || "-"),
+        "ResourceQuota：CPU " + wizardFields.quotaCPU.value + " / 内存 " + wizardFields.quotaMemory.value + " / GPU " + wizardFields.quotaGPU.value,
+        "LimitRange：单任务 CPU " + wizardFields.maxTaskCPU.value + " / 内存 " + wizardFields.maxTaskMemory.value + " / GPU " + wizardFields.maxTaskGPU.value,
+        "配额校验：" + (issues.length ? issues.join("；") : "当前申请资源在租户配额和单任务上限内。")
+      ].join("\n");
+    }
+    function validateIsolationPolicy() {
+      renderIsolationPolicyPreview();
+      var issues = isolationPolicyIssues();
+      if (!issues.length) return true;
+      setError("资源隔离校验未通过：" + issues.join("；"));
+      cards.appendChild(card("资源隔离校验", "未通过", "warn"));
+      return false;
     }
     function setBaseModel(uri) {
       setWizardValue("baseModelURI", uri || "");
@@ -1411,6 +1484,7 @@ const consoleHTML = `<!doctype html>
       syncVisibility();
       yaml.value = buildYAML();
       renderSchedulingPolicyExplanation();
+      renderIsolationPolicyPreview();
     }
     function fillServiceForm() {
       setWizardValue("algorithmTemplate", "service");
@@ -2235,6 +2309,7 @@ const consoleHTML = `<!doctype html>
       fields[id].addEventListener("change", function() { generateYAML(false); });
     });
     document.getElementById("validate").onclick = function() {
+      if (!validateIsolationPolicy()) return;
       post("/api/v1/ai/validate").then(function(data) {
         cards.innerHTML = "";
         cards.appendChild(card("校验结果", "通过", "ok"));
@@ -2246,6 +2321,7 @@ const consoleHTML = `<!doctype html>
       });
     };
     document.getElementById("normalize").onclick = function() {
+      if (!validateIsolationPolicy()) return;
       post("/api/v1/ai/normalize").then(function(data) {
         renderCards(data);
         setJSON(data, "已归一化");
@@ -2254,6 +2330,7 @@ const consoleHTML = `<!doctype html>
       });
     };
     document.getElementById("deploy").onclick = function() {
+      if (!validateIsolationPolicy()) return;
       deploy().then(function(data) {
         renderCards(data.normalized || {});
         cards.appendChild(card("部署结果", data.application && data.application.dryRun ? "DryRun 通过" : "已提交", "ok"));
