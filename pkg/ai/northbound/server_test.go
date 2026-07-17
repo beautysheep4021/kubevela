@@ -194,6 +194,27 @@ func TestConsoleShowsAndEnforcesIsolationPolicy(t *testing.T) {
 	}
 }
 
+func TestConsoleShowsMonitorResourceOverviewAndTenantView(t *testing.T) {
+	for _, expected := range []string{
+		"算力资源总览",
+		"CPU 申请总量",
+		"内存 申请总量",
+		"GPU 申请总量",
+		"租户资源视图",
+		"按租户汇总资源申请",
+		"function aggregateMonitorResources",
+		"function renderTenantResourceRows",
+		"function formatCpuMilli",
+		"function formatMemoryMi",
+		"id=\"monitor-resource-cards\"",
+		"id=\"monitor-tenant-list\"",
+	} {
+		if !strings.Contains(consoleHTML, expected) {
+			t.Fatalf("console monitor resource overview missing %q", expected)
+		}
+	}
+}
+
 func TestConsoleKeepsUserAssetPathsAwayFromRawURIs(t *testing.T) {
 	for _, forbidden := range []string{
 		"datasetURI。</div>",

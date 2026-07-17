@@ -63,6 +63,77 @@ func TestApplicationHasWorkloadTypeFindsAIJob(t *testing.T) {
 	}
 }
 
+func TestApplicationListItemIncludesResourceSummary(t *testing.T) {
+	app := unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "core.oam.dev/v1beta1",
+			"kind":       "Application",
+			"metadata": map[string]interface{}{
+				"name":      "tenant-a-training",
+				"namespace": "sock-shop",
+			},
+			"spec": map[string]interface{}{
+				"components": []interface{}{
+					map[string]interface{}{
+						"name": "serving",
+						"type": "ai-service",
+						"properties": map[string]interface{}{
+							"replicas": int64(2),
+							"resources": map[string]interface{}{
+								"requests": map[string]interface{}{
+									"cpu":            "4",
+									"memory":         "8Gi",
+									"nvidia.com/gpu": "1",
+								},
+							},
+						},
+						"traits": []interface{}{
+							map[string]interface{}{
+								"type": "ai-runtime",
+								"properties": map[string]interface{}{
+									"tenant":      "tenant-a",
+									"environment": "prod",
+								},
+							},
+						},
+					},
+					map[string]interface{}{
+						"name": "trainer",
+						"type": "ai-job",
+						"properties": map[string]interface{}{
+							"parallelism": int64(3),
+							"resources": map[string]interface{}{
+								"requests": map[string]interface{}{
+									"cpu":    "500m",
+									"memory": "1Gi",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	item, ok := applicationListItem(&app)
+
+	if !ok {
+		t.Fatalf("expected application list item")
+	}
+	if item.ResourceSummary.CPUMilli != 9500 {
+		t.Fatalf("cpu milli = %d, want 9500", item.ResourceSummary.CPUMilli)
+	}
+	if item.ResourceSummary.MemoryMi != 19456 {
+		t.Fatalf("memory Mi = %d, want 19456", item.ResourceSummary.MemoryMi)
+	}
+	if item.ResourceSummary.GPU != 2 {
+		t.Fatalf("gpu = %d, want 2", item.ResourceSummary.GPU)
+	}
+	if item.AIMetadata["ai.oam.dev/tenant"] != "tenant-a" {
+		t.Fatalf("tenant metadata = %q, want tenant-a", item.AIMetadata["ai.oam.dev/tenant"])
+	}
+}
+
 func TestAuditConfigMapNameIsBounded(t *testing.T) {
 	name := auditConfigMapName("2026-05-22T08:09:00.000000000Z-delete-sock-shop-ai-job-demo-with-extra-long-name")
 

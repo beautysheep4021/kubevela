@@ -382,6 +382,31 @@ const consoleHTML = `<!doctype html>
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .resource-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .tenant-list {
+      display: grid;
+      gap: 10px;
+    }
+    .tenant-row {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1.15fr .75fr .7fr .7fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      color: var(--ink);
+      background: rgba(255,255,255,.72);
+      text-align: left;
+    }
+    .tenant-row strong, .tenant-row span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .pill {
       display: inline-flex;
       justify-content: center;
@@ -497,6 +522,7 @@ const consoleHTML = `<!doctype html>
       textarea { min-height: 430px; }
       .result-grid { grid-template-columns: 1fr; }
       .task-row { grid-template-columns: 1fr 1fr; }
+      .tenant-row { grid-template-columns: 1fr 1fr; }
     }
   </style>
 </head>
@@ -929,6 +955,21 @@ const consoleHTML = `<!doctype html>
               <div class="intent-card warn"><div class="label">异常任务</div><strong>0</strong></div>
             </div>
           </div>
+          <div class="subhead" style="margin:0 22px;">算力资源总览</div>
+          <div class="results">
+            <div class="result-grid resource-grid" id="monitor-resource-cards">
+              <div class="intent-card ok"><div class="label">CPU 申请总量</div><strong>0m</strong></div>
+              <div class="intent-card ok"><div class="label">内存 申请总量</div><strong>0Mi</strong></div>
+              <div class="intent-card ok"><div class="label">GPU 申请总量</div><strong>0 GPU</strong></div>
+            </div>
+          </div>
+          <div class="subhead" style="margin:0 22px;">租户资源视图</div>
+          <div class="results">
+            <div class="label">按租户汇总资源申请</div>
+            <div id="monitor-tenant-list" class="tenant-list">
+              <div class="empty">点击“刷新监测”，按租户查看资源申请。</div>
+            </div>
+          </div>
           <div class="subhead" style="margin:0 22px;">筛选条件</div>
           <div class="filter-grid">
             <div class="field">
@@ -1117,6 +1158,8 @@ const consoleHTML = `<!doctype html>
     var monitorLogTail = document.getElementById("monitor-log-tail");
     var monitorLogsOutput = document.getElementById("monitor-logs-output");
     var monitorCards = document.getElementById("monitor-cards");
+    var monitorResourceCards = document.getElementById("monitor-resource-cards");
+    var monitorTenantList = document.getElementById("monitor-tenant-list");
     var monitorTaskList = document.getElementById("monitor-task-list");
     var monitorAlertList = document.getElementById("monitor-alert-list");
     var monitorOutput = document.getElementById("monitor-output");
@@ -2164,6 +2207,104 @@ const consoleHTML = `<!doctype html>
       monitorCards.appendChild(card("Running", runningCount, ""));
       monitorCards.appendChild(card("异常任务", unhealthyCount, unhealthyCount ? "warn" : "ok"));
     }
+    function aggregateMonitorResources(items) {
+      var summary = {cpuMilli: 0, memoryMi: 0, gpu: 0};
+      items.forEach(function(item) {
+        var resourceSummary = item.resourceSummary || {};
+        summary.cpuMilli += resourceSummary.cpuMilli || 0;
+        summary.memoryMi += resourceSummary.memoryMi || 0;
+        summary.gpu += resourceSummary.gpu || 0;
+      });
+      return summary;
+    }
+    function formatCpuMilli(value) {
+      if (!value) {
+        return "0m";
+      }
+      if (value < 1000) {
+        return value + "m";
+      }
+      var cores = Math.round((value / 1000) * 10) / 10;
+      return (Number.isInteger(cores) ? cores : cores.toFixed(1)) + "核";
+    }
+    function formatMemoryMi(value) {
+      if (!value) {
+        return "0Mi";
+      }
+      if (value < 1024) {
+        return value + "Mi";
+      }
+      var gib = Math.round((value / 1024) * 10) / 10;
+      return (Number.isInteger(gib) ? gib : gib.toFixed(1)) + "Gi";
+    }
+    function renderMonitorResourceCards(items) {
+      var summary = aggregateMonitorResources(items);
+      monitorResourceCards.innerHTML = "";
+      monitorResourceCards.appendChild(card("CPU 申请总量", formatCpuMilli(summary.cpuMilli), "ok"));
+      monitorResourceCards.appendChild(card("内存 申请总量", formatMemoryMi(summary.memoryMi), "ok"));
+      monitorResourceCards.appendChild(card("GPU 申请总量", summary.gpu + " GPU", "ok"));
+    }
+    function aggregateTenantResources(items) {
+      var groups = {};
+      items.forEach(function(item) {
+        var tenant = metadata(item, "tenant") || "未标记租户";
+        if (!groups[tenant]) {
+          groups[tenant] = {
+            tenant: tenant,
+            cpuMilli: 0,
+            memoryMi: 0,
+            gpu: 0,
+            taskCount: 0,
+            serviceCount: 0,
+            jobCount: 0
+          };
+        }
+        var summary = item.resourceSummary || {};
+        var group = groups[tenant];
+        group.cpuMilli += summary.cpuMilli || 0;
+        group.memoryMi += summary.memoryMi || 0;
+        group.gpu += summary.gpu || 0;
+        group.taskCount += 1;
+        var workloadTypes = item.workloadTypes || [];
+        if (workloadTypes.indexOf("service") !== -1) {
+          group.serviceCount += 1;
+        }
+        if (workloadTypes.indexOf("job") !== -1) {
+          group.jobCount += 1;
+        }
+      });
+      return Object.keys(groups).map(function(key) {
+        return groups[key];
+      }).sort(function(a, b) {
+        if (b.cpuMilli !== a.cpuMilli) {
+          return b.cpuMilli - a.cpuMilli;
+        }
+        return a.tenant.localeCompare(b.tenant);
+      });
+    }
+    function renderTenantResourceRows(container, items) {
+      var rows = aggregateTenantResources(items);
+      container.innerHTML = "";
+      if (!rows.length) {
+        var empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "当前筛选条件下暂无租户资源记录。";
+        container.appendChild(empty);
+        return;
+      }
+      rows.forEach(function(row) {
+        var node = document.createElement("div");
+        node.className = "tenant-row";
+        node.innerHTML = [
+          "<strong>" + row.tenant + "</strong>",
+          "<span>" + row.taskCount + " 个任务 · " + row.serviceCount + " 服务 / " + row.jobCount + " 训练</span>",
+          "<span>CPU " + formatCpuMilli(row.cpuMilli) + "</span>",
+          "<span>内存 " + formatMemoryMi(row.memoryMi) + "</span>",
+          "<span class=\"pill\">" + row.gpu + " GPU</span>"
+        ].join("");
+        container.appendChild(node);
+      });
+    }
     function renderTaskRows(container, items, emptyText) {
       container.innerHTML = "";
       if (!items.length) {
@@ -2195,6 +2336,8 @@ const consoleHTML = `<!doctype html>
       return fetchJSON("/api/v1/ai/applications?namespace=" + ns).then(function(data) {
         var items = (data.items || []).filter(matchesMonitorFilters);
         renderMonitorCards(items);
+        renderMonitorResourceCards(items);
+        renderTenantResourceRows(monitorTenantList, items);
         renderTaskRows(monitorTaskList, items, "当前筛选条件下暂无任务。");
         renderTaskRows(monitorAlertList, items.filter(function(item) { return !item.healthy; }), "暂无异常任务。");
         monitorAction.textContent = "监测视图已刷新";

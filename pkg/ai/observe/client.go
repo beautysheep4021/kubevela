@@ -36,15 +36,16 @@ type Client struct {
 }
 
 type ApplicationListItem struct {
-	Name          string            `json:"name"`
-	Namespace     string            `json:"namespace,omitempty"`
-	Phase         string            `json:"phase,omitempty"`
-	Healthy       bool              `json:"healthy"`
-	Message       string            `json:"message,omitempty"`
-	Components    []ComponentRef    `json:"components,omitempty"`
-	WorkloadTypes []string          `json:"workloadTypes,omitempty"`
-	AIMetadata    map[string]string `json:"aiMetadata,omitempty"`
-	Warnings      []Warning         `json:"warnings,omitempty"`
+	Name            string            `json:"name"`
+	Namespace       string            `json:"namespace,omitempty"`
+	Phase           string            `json:"phase,omitempty"`
+	Healthy         bool              `json:"healthy"`
+	Message         string            `json:"message,omitempty"`
+	Components      []ComponentRef    `json:"components,omitempty"`
+	WorkloadTypes   []string          `json:"workloadTypes,omitempty"`
+	ResourceSummary ResourceSummary   `json:"resourceSummary,omitempty"`
+	AIMetadata      map[string]string `json:"aiMetadata,omitempty"`
+	Warnings        []Warning         `json:"warnings,omitempty"`
 }
 
 type ComponentRef struct {
@@ -638,12 +639,13 @@ func applicationListItem(app *unstructured.Unstructured) (ApplicationListItem, b
 		return ApplicationListItem{}, false
 	}
 	item := ApplicationListItem{
-		Name:          app.GetName(),
-		Namespace:     app.GetNamespace(),
-		Phase:         nestedString(app.Object, "status", "status"),
-		Components:    components,
-		WorkloadTypes: workloadTypes,
-		AIMetadata:    map[string]string{},
+		Name:            app.GetName(),
+		Namespace:       app.GetNamespace(),
+		Phase:           nestedString(app.Object, "status", "status"),
+		Components:      components,
+		WorkloadTypes:   workloadTypes,
+		ResourceSummary: applicationResourceSummary(app),
+		AIMetadata:      map[string]string{},
 	}
 	mergeAIMetadata(item.AIMetadata, app)
 	mergeRuntimeTraitMetadata(item.AIMetadata, app)
