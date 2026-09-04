@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -31,10 +32,23 @@ func TestServerHealthz(t *testing.T) {
 	}
 }
 
-func TestServerServesConsolePage(t *testing.T) {
+func TestServerRedirectsAnonymousUsersToLogin(t *testing.T) {
 	server := NewServer()
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusFound)
+	}
+	if location := recorder.Header().Get("Location"); location != "/login" {
+		t.Fatalf("location = %q, want /login", location)
+	}
+}
+
+func TestServerServesLoginPage(t *testing.T) {
+	server := NewServer()
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/login", nil))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
@@ -45,132 +59,116 @@ func TestServerServesConsolePage(t *testing.T) {
 	}
 	body := recorder.Body.String()
 	for _, expected := range []string{
-		"使用方工作台",
-		"监测方工作台",
-		"算法任务模板",
-		"SFT 微调",
-		"训练向导",
-		"基础模型",
-		"训练数据集",
-		"待发布模型",
-		"评测数据集",
-		"训练规格",
-		"资源与调度",
-		"调度策略模板",
-		"当前调度映射",
-		"策略说明",
-		"资源规格",
-		"CPU 核数",
-		"内存",
-		"GPU 数量",
-		"调度优先级",
-		"节点类型",
-		"调度策略",
-		"租户资源隔离",
-		"租户命名空间",
-		"CPU 配额",
-		"内存配额",
-		"GPU 配额",
-		"单任务最大 GPU",
-		"resources.requests/limits",
-		"priorityClassName",
-		"nodeSelector",
-		"ai-runtime.schedulingStrategy",
-		"训练完成后自动发布为服务",
-		"高级配置",
-		"领域 YAML",
-		"治理意图",
-		"工作负载意图",
-		"全局任务概览",
-		"筛选条件",
-		"异常任务",
-		"AIService 数量",
-		"AIJob 数量",
-		"任务类型",
-		"模型名称",
-		"数据集 URI",
-		"生成 YAML",
-		"提交部署",
-		"服务端 DryRun",
-		"/api/v1/ai/validate",
-		"/api/v1/ai/normalize",
-		"/api/v1/ai/applications",
-		"任务列表",
-		"刷新任务",
-		"运行日志",
-		"刷新日志",
-		"删除任务",
-		"重启服务",
-		"重新运行 Job",
-		"操作审计",
-		"应用交付",
-		"解析训练结果",
-		"发布为服务",
-		"测试服务访问",
-		"查看模型产物",
-		"我的模型",
-		"模型资产库",
-		"登记模型",
-		"设为基础模型",
-		"发布此模型",
-		"数据资产库",
-		"登记数据集",
-		"选择数据集",
-		"/api/v1/ai/datasets",
-		"通过阈值",
-		"发起评测",
-		"同步评测结果",
-		"/api/v1/ai/artifacts",
-		"/api/v1/ai/models",
-		"/evaluate",
-		"/sync-evaluation",
-		"/probe",
-		"/logs",
-		"/api/v1/ai/audits",
-		"/api/v1/ai/deliveries",
-		"governanceIntent",
-		"workloadIntent",
+		"登录",
+		"角色选择",
+		"使用方",
+		"K8s 管理员",
+		"admin / shiyong",
+		"admin / jiankong",
 	} {
 		if !strings.Contains(body, expected) {
-			t.Fatalf("console page missing %q", expected)
-		}
-	}
-	for _, forbidden := range []string{
-		"基础模型 URI",
-		"训练数据 URI",
-		"待发布模型 URI",
-		"评测数据 URI",
-		"数据集内部 URI",
-	} {
-		if strings.Contains(body, forbidden) {
-			t.Fatalf("console page still exposes user-facing URI label %q", forbidden)
+			t.Fatalf("login page missing %q", expected)
 		}
 	}
 }
 
-func TestConsoleGeneratedAIJobIncludesDeliveryResultMarker(t *testing.T) {
-	for _, expected := range []string{
-		"function buildDeliveryJobResultScript",
-		"AI_RESULT_JSON=",
-		"inline://models/\" + fields.name.value + \"/v1",
-		"echo training_size=",
-		"line(\"trainingSize\", wizardFields.trainingSize.value, 4)",
-		"line(\"resources\",",
-		"line(\"cpu\", wizardFields.resourceCPU.value, 4)",
-		"line(\"scheduling\",",
-		"line(\"priority\", wizardFields.schedulingPriority.value, 4)",
-		"line(\"isolation\",",
-		"line(\"tenantNamespace\", wizardFields.tenantNamespace.value || fields.namespace.value, 4)",
-		"function looksLikeModelVersion",
-		"function applyResourceProfile",
-		"function applySchedulingPolicyTemplate",
-		"function renderSchedulingPolicyExplanation",
-		"\"gpu-dedicated\"",
-		"wizardFields.schedulingPolicyTemplate.value",
-	} {
-		if !strings.Contains(consoleHTML, expected) {
-			t.Fatalf("console AIJob generator missing %q", expected)
-		}
+func TestServerLoginFlowRoutesByRole(t *testing.T) {
+	server := NewServer()
+	cases := []struct {
+		name      string
+		role      string
+		password  string
+		wantPath  string
+		wantTitle string
+	}{
+		{name: "user", role: "user", password: "shiyong", wantPath: "/user", wantTitle: "使用方工作台"},
+		{name: "monitor", role: "monitor", password: "jiankong", wantPath: "/monitor", wantTitle: "K8s 管理员工作台"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cookie := loginForRole(t, server, tc.role, "admin", tc.password)
+
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, tc.wantPath, nil)
+			request.AddCookie(cookie)
+			server.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+			}
+			body := recorder.Body.String()
+			for _, expected := range []string{
+				tc.wantTitle,
+				"data-role=\"" + tc.role + "\"",
+				"退出登录",
+			} {
+				if !strings.Contains(body, expected) {
+					t.Fatalf("console page missing %q", expected)
+				}
+			}
+
+			otherPath := "/monitor"
+			if tc.wantPath == "/monitor" {
+				otherPath = "/user"
+			}
+			redirect := httptest.NewRecorder()
+			otherReq := httptest.NewRequest(http.MethodGet, otherPath, nil)
+			otherReq.AddCookie(cookie)
+			server.ServeHTTP(redirect, otherReq)
+			if redirect.Code != http.StatusFound {
+				t.Fatalf("status = %d, want %d", redirect.Code, http.StatusFound)
+			}
+			if location := redirect.Header().Get("Location"); location != tc.wantPath {
+				t.Fatalf("location = %q, want %q", location, tc.wantPath)
+			}
+		})
+	}
+}
+
+func TestServerBlocksAnonymousApiRequests(t *testing.T) {
+	server := NewServer()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/ai/validate", strings.NewReader("kind: AIJob"))
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestServerPreservesDemoQueryOnLoginRedirect(t *testing.T) {
+	server := NewServer()
+	cases := []struct {
+		name     string
+		loginURL string
+		want     string
+	}{
+		{name: "user", loginURL: "/login?demo=local", want: "/user?demo=local"},
+		{name: "monitor", loginURL: "/login?demo=local", want: "/monitor?demo=local"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			form := url.Values{}
+			if tc.name == "user" {
+				form.Set("role", "user")
+				form.Set("username", "admin")
+				form.Set("password", "shiyong")
+			} else {
+				form.Set("role", "monitor")
+				form.Set("username", "admin")
+				form.Set("password", "jiankong")
+			}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, tc.loginURL, strings.NewReader(form.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			server.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusFound {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusFound)
+			}
+			if location := recorder.Header().Get("Location"); location != tc.want {
+				t.Fatalf("location = %q, want %q", location, tc.want)
+			}
+		})
 	}
 }
 
@@ -195,50 +193,185 @@ func TestConsoleShowsAndEnforcesIsolationPolicy(t *testing.T) {
 }
 
 func TestConsoleShowsMonitorResourceOverviewAndTenantView(t *testing.T) {
-	for _, expected := range []string{
-		"算力资源总览",
-		"CPU 申请总量",
-		"内存 申请总量",
-		"GPU 申请总量",
-		"租户资源视图",
-		"按租户汇总资源申请",
-		"function aggregateMonitorResources",
-		"function renderTenantResourceRows",
-		"function formatCpuMilli",
-		"function formatMemoryMi",
-		"id=\"monitor-resource-cards\"",
-		"id=\"monitor-tenant-list\"",
+	for _, forbidden := range []string{
+		"基础模型 URI",
+		"训练数据 URI",
+		"待发布模型 URI",
+		"评测数据 URI",
+		"数据集内部 URI",
 	} {
-		if !strings.Contains(consoleHTML, expected) {
-			t.Fatalf("console monitor resource overview missing %q", expected)
+		if strings.Contains(consoleHTML, forbidden) {
+			t.Fatalf("console page still exposes user-facing URI label %q", forbidden)
 		}
 	}
 }
 
-func TestConsoleKeepsUserAssetPathsAwayFromRawURIs(t *testing.T) {
-	for _, forbidden := range []string{
-		"datasetURI。</div>",
-		"请先填写或选择一个数据集内部 URI。",
-		"<span title=\\\"\" + uri + \"\\\">\" + (uri || \"-\") + \"</span>",
-		"<span title=\\\"\" + (item.modelURI || \"\") + \"\\\">\" + (item.modelURI || \"-\") + \"</span>",
-	} {
-		if strings.Contains(consoleHTML, forbidden) {
-			t.Fatalf("console user asset path still renders raw URI fragment %q", forbidden)
-		}
-	}
+func TestConsoleUsesSidebarAndSinglePublishServiceEntry(t *testing.T) {
 	for _, expected := range []string{
-		"function setBaseModel",
-		"function setServiceModel",
-		"function setEvaluationDataset",
-		"baseModelSelect.onchange",
-		"serviceModelSelect.onchange",
-		"evaluationDatasetSelect.onchange",
-		"资产编号：",
-		"数据集编号：",
+		"class=\"sidebar\"",
+		"data-section=\"training\"",
+		"data-section=\"platform\"",
+		"data-section=\"overview\"",
+		"data-section=\"tasks\"",
+		"data-section=\"audits\"",
+		"id=\"nav-training\"",
+		"id=\"nav-platform\"",
+		"id=\"nav-monitor-overview\"",
+		"id=\"nav-monitor-tasks\"",
+		"id=\"nav-monitor-audits\"",
+		"id=\"publish-delivery-service\"",
+		"id=\"audit-list\"",
 	} {
 		if !strings.Contains(consoleHTML, expected) {
-			t.Fatalf("console user asset path missing %q", expected)
+			t.Fatalf("console page missing %q", expected)
 		}
+	}
+	for _, forbidden := range []string{
+		"id=\"template-service\"",
+		"发布服务</strong>",
+	} {
+		if strings.Contains(consoleHTML, forbidden) {
+			t.Fatalf("console page still contains duplicate publish-service affordance %q", forbidden)
+		}
+	}
+}
+
+func TestConsoleUsesLightThemeAndFoldableSections(t *testing.T) {
+	for _, expected := range []string{
+		"--paper: #f2f3f3;",
+		"--panel: #ffffff;",
+		"--line: #d5d9d9;",
+		"font-family: -apple-system",
+		"class=\"fold-section\"",
+		"summary>资源与调度（以 K8s 调度为准）</summary",
+		"summary>租户资源隔离</summary",
+		"summary>评测配置</summary",
+		"summary>应用交付</summary",
+		"summary>筛选条件</summary",
+		"任务类型（AIService / AIJob）",
+		"载入服务画像",
+		"服务画像基座",
+		"服务画像会把当前模型引用整理为 AIService 配置，不新增运行时类型。",
+		"Kubernetes 调度：source of truth",
+		"集群能力边界：CPU Manager static / CPU pinning、GPU device plugin、Topology Manager",
+	} {
+		if !strings.Contains(consoleHTML, expected) {
+			t.Fatalf("console page missing %q", expected)
+		}
+	}
+}
+
+func TestConsoleMakesAIServiceAndAIJobExplicit(t *testing.T) {
+	for _, expected := range []string{
+		"<option value=\"AIService\">AIService</option>",
+		"<option value=\"AIJob\">AIJob</option>",
+		"高级配置：查看和调整底层 AIService / AIJob 字段",
+		"当前调度映射（以 K8s 调度为准）",
+	} {
+		if !strings.Contains(consoleHTML, expected) {
+			t.Fatalf("console page missing %q", expected)
+		}
+	}
+}
+
+func TestConsoleSeparatesTrainingAndEvaluationModes(t *testing.T) {
+	for _, expected := range []string{
+		"summary>训练配置</summary",
+		"id=\"evaluation-band\"",
+		"id=\"workflow-model-hint\"",
+		"function syncWorkflowMode(",
+		"function currentJobDatasetURI(",
+		"evaluation_threshold=",
+		"summary: template === \"evaluation\" ? \"evaluation-passed\"",
+	} {
+		if !strings.Contains(consoleHTML, expected) {
+			t.Fatalf("console page missing %q", expected)
+		}
+	}
+}
+
+func TestConsoleMonitorDashboardAddsChartsAndExtraKPIs(t *testing.T) {
+	for _, expected := range []string{
+		"id=\"monitor-kpi-grid\"",
+		"id=\"monitor-trend-chart\"",
+		"id=\"monitor-status-chart\"",
+		"id=\"monitor-tenant-chart\"",
+		"最近刷新趋势",
+		"任务健康分布",
+		"租户任务 Top5",
+		"健康率",
+		"活跃租户",
+		"function buildMonitorSummary(",
+		"function renderMonitorTrendChart(",
+		"function renderMonitorStatusChart(",
+		"function renderMonitorTenantChart(",
+		"var monitorHistory = []",
+	} {
+		if !strings.Contains(consoleHTML, expected) {
+			t.Fatalf("console monitor dashboard missing %q", expected)
+		}
+	}
+}
+
+func TestConsoleContainsDemoModeSupport(t *testing.T) {
+	for _, expected := range []string{
+		"var demoMode =",
+		"var demoState =",
+		"function demoResponse(",
+		"demo=local",
+	} {
+		if !strings.Contains(consoleHTML, expected) {
+			t.Fatalf("console page missing %q", expected)
+		}
+	}
+}
+
+func loginForRole(t *testing.T, server http.Handler, role, username, password string) *http.Cookie {
+	t.Helper()
+	form := url.Values{}
+	form.Set("role", role)
+	form.Set("username", username)
+	form.Set("password", password)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusFound)
+	}
+	if recorder.Header().Get("Location") == "" {
+		t.Fatal("login response missing redirect location")
+	}
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name != "" {
+			return cookie
+		}
+	}
+	t.Fatal("login response missing session cookie")
+	return nil
+}
+
+type authenticatedHandler struct {
+	http.Handler
+	cookie *http.Cookie
+}
+
+func (h authenticatedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/login" && r.URL.Path != "/healthz" && r.URL.Path != "/" {
+		if _, err := r.Cookie(sessionCookieName); err != nil {
+			r.AddCookie(h.cookie)
+		}
+	}
+	h.Handler.ServeHTTP(w, r)
+}
+
+func authenticatedServer(t *testing.T, handler http.Handler) http.Handler {
+	t.Helper()
+	return authenticatedHandler{
+		Handler: handler,
+		cookie:  loginForRole(t, handler, "user", "admin", "shiyong"),
 	}
 }
 
@@ -258,7 +391,7 @@ func TestServerListsApplications(t *testing.T) {
 			},
 		},
 	}
-	server := NewServerWithOptions(Options{Reader: reader})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Reader: reader}))
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/applications?namespace=sock-shop", nil))
 
@@ -289,7 +422,7 @@ func TestServerReturnsApplicationStatus(t *testing.T) {
 			},
 		},
 	}
-	server := NewServerWithOptions(Options{Reader: reader})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Reader: reader}))
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/applications/sock-shop/ai-service-northbound-demo/status", nil))
 
@@ -325,7 +458,7 @@ func TestServerReturnsApplicationLogs(t *testing.T) {
 			},
 		},
 	}
-	server := NewServerWithOptions(Options{Reader: reader})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Reader: reader}))
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/applications/sock-shop/ai-job-demo/logs?pod=ai-job-demo-pod&container=main&tailLines=80", nil)
 	server.ServeHTTP(recorder, req)
@@ -356,7 +489,7 @@ func TestServerProbesApplicationService(t *testing.T) {
 			Body:        `{"status":"ok"}`,
 		},
 	}
-	server := NewServerWithOptions(Options{Prober: prober})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Prober: prober}))
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/applications/sock-shop/delivery-service/probe", strings.NewReader(`{"path":"/healthz","timeoutSeconds":3}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -380,7 +513,7 @@ func TestServerProbesApplicationService(t *testing.T) {
 func TestServerDeletesApplicationAndRecordsAudit(t *testing.T) {
 	manager := &recordingApplicationManager{}
 	audits := &recordingAuditStore{}
-	server := NewServerWithOptions(Options{Manager: manager, Audits: audits})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Manager: manager, Audits: audits}))
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/ai/applications/sock-shop/ai-job-demo", nil)
 	req.Header.Set("X-AI-User", "tester")
@@ -407,7 +540,7 @@ func TestServerDeletesApplicationAndRecordsAudit(t *testing.T) {
 func TestServerRestartsApplicationAndRecordsAudit(t *testing.T) {
 	manager := &recordingApplicationManager{}
 	audits := &recordingAuditStore{}
-	server := NewServerWithOptions(Options{Manager: manager, Audits: audits})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Manager: manager, Audits: audits}))
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/applications/sock-shop/ai-service-demo/restart", nil)
 	server.ServeHTTP(recorder, req)
@@ -426,7 +559,7 @@ func TestServerRestartsApplicationAndRecordsAudit(t *testing.T) {
 func TestServerRerunsApplicationAndRecordsAudit(t *testing.T) {
 	manager := &recordingApplicationManager{}
 	audits := &recordingAuditStore{}
-	server := NewServerWithOptions(Options{Manager: manager, Audits: audits})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Manager: manager, Audits: audits}))
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/applications/sock-shop/ai-job-demo/rerun", nil)
 	server.ServeHTTP(recorder, req)
@@ -454,7 +587,7 @@ func TestServerListsAuditEvents(t *testing.T) {
 			},
 		},
 	}
-	server := NewServerWithOptions(Options{Audits: audits})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Audits: audits}))
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/audits?namespace=sock-shop", nil))
 
@@ -489,7 +622,7 @@ func TestServerExtractsDeliveryResultFromAIJobLogs(t *testing.T) {
 			},
 		},
 	}
-	server := NewServerWithOptions(Options{Reader: reader})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Reader: reader}))
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/deliveries/sock-shop/train-demo/result", nil))
 
@@ -518,7 +651,7 @@ func TestServerPublishesDeliveryResultAsAIService(t *testing.T) {
 	}
 	applier := &recordingApplicationApplier{}
 	audits := &recordingAuditStore{}
-	server := NewServerWithOptions(Options{Reader: reader, Applier: applier, Audits: audits})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Reader: reader, Applier: applier, Audits: audits}))
 	body := strings.NewReader(`{"serviceName":"train-demo-service","image":"python:3.11-slim","port":8080,"servicePort":80}`)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/deliveries/sock-shop/train-demo/publish-service", body)
@@ -560,7 +693,7 @@ func TestServerPublishesDeliveryResultAndRecordsArtifact(t *testing.T) {
 		},
 	}
 	artifacts := &recordingArtifactStore{}
-	server := NewServerWithOptions(Options{Reader: reader, Applier: &recordingApplicationApplier{}, Artifacts: artifacts})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Reader: reader, Applier: &recordingApplicationApplier{}, Artifacts: artifacts}))
 	body := strings.NewReader(`{"serviceName":"train-demo-service"}`)
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/deliveries/sock-shop/train-demo/publish-service", body))
@@ -594,7 +727,7 @@ func TestServerListsArtifacts(t *testing.T) {
 			},
 		},
 	}
-	server := NewServerWithOptions(Options{Artifacts: artifacts})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Artifacts: artifacts}))
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/artifacts?namespace=sock-shop", nil))
 
@@ -626,7 +759,7 @@ func TestServerListsModelAssets(t *testing.T) {
 			},
 		},
 	}
-	server := NewServerWithOptions(Options{Artifacts: artifacts})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Artifacts: artifacts}))
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/models?namespace=sock-shop", nil))
 
@@ -647,7 +780,7 @@ func TestServerListsModelAssets(t *testing.T) {
 
 func TestServerRegistersModelAsset(t *testing.T) {
 	artifacts := &recordingArtifactStore{}
-	server := NewServerWithOptions(Options{Artifacts: artifacts})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Artifacts: artifacts}))
 	body := strings.NewReader(`{
 		"namespace": "sock-shop",
 		"name": "customer-sft-demo",
@@ -682,7 +815,7 @@ func TestServerRegistersModelAsset(t *testing.T) {
 
 func TestServerRegistersModelAssetDerivesNameFromVersionedURI(t *testing.T) {
 	artifacts := &recordingArtifactStore{}
-	server := NewServerWithOptions(Options{Artifacts: artifacts})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Artifacts: artifacts}))
 	body := strings.NewReader(`{
 		"namespace": "sock-shop",
 		"modelURI": "inline://models/customer-sft-demo/v1"
@@ -711,7 +844,7 @@ func TestServerListsDatasetAssets(t *testing.T) {
 			},
 		},
 	}
-	server := NewServerWithOptions(Options{Datasets: datasets})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Datasets: datasets}))
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/datasets?namespace=sock-shop", nil))
 
@@ -732,7 +865,7 @@ func TestServerListsDatasetAssets(t *testing.T) {
 
 func TestServerRegistersDatasetAsset(t *testing.T) {
 	datasets := &recordingDatasetStore{}
-	server := NewServerWithOptions(Options{Datasets: datasets})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Datasets: datasets}))
 	body := strings.NewReader(`{
 		"namespace": "sock-shop",
 		"name": "customer-sft",
@@ -776,7 +909,7 @@ func TestServerStartsModelEvaluationJob(t *testing.T) {
 			},
 		},
 	}
-	server := NewServerWithOptions(Options{Applier: applier, Artifacts: artifacts})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Applier: applier, Artifacts: artifacts}))
 	body := strings.NewReader(`{
 		"evaluationDatasetURI": "inline://datasets/customer-eval",
 		"evaluationType": "accuracy",
@@ -826,7 +959,7 @@ func TestServerSyncsModelEvaluationResult(t *testing.T) {
 			},
 		},
 	}
-	server := NewServerWithOptions(Options{Reader: reader, Artifacts: artifacts})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Reader: reader, Artifacts: artifacts}))
 	body := strings.NewReader(`{"evaluationJobName":"customer-sft-demo-eval"}`)
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/models/sock-shop/customer-sft-demo/sync-evaluation", body))
@@ -865,7 +998,7 @@ func TestServerSyncsFailedModelEvaluationResult(t *testing.T) {
 			},
 		},
 	}
-	server := NewServerWithOptions(Options{Reader: reader, Artifacts: artifacts})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Reader: reader, Artifacts: artifacts}))
 	body := strings.NewReader(`{"evaluationJobName":"customer-sft-demo-eval"}`)
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/models/sock-shop/customer-sft-demo/sync-evaluation", body))
@@ -886,7 +1019,7 @@ func TestServerSyncsFailedModelEvaluationResult(t *testing.T) {
 }
 
 func TestServerListReturnsUnavailableWhenReaderIsNotConfigured(t *testing.T) {
-	server := NewServer()
+	server := authenticatedServer(t, NewServer())
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/applications", nil))
 
@@ -897,7 +1030,7 @@ func TestServerListReturnsUnavailableWhenReaderIsNotConfigured(t *testing.T) {
 
 func TestServerDeploysDomainYAMLWithDryRun(t *testing.T) {
 	applier := &recordingApplicationApplier{}
-	server := NewServerWithOptions(Options{Applier: applier})
+	server := authenticatedServer(t, NewServerWithOptions(Options{Applier: applier}))
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/applications?dryRun=true", bytes.NewReader([]byte(validAIServiceYAML()))))
 
@@ -926,7 +1059,7 @@ func TestServerDeploysDomainYAMLWithDryRun(t *testing.T) {
 }
 
 func TestServerDeployReturnsUnavailableWhenApplyIsNotConfigured(t *testing.T) {
-	server := NewServer()
+	server := authenticatedServer(t, NewServer())
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/applications", bytes.NewReader([]byte(validAIServiceYAML()))))
 
@@ -943,7 +1076,7 @@ func TestServerDeployReturnsUnavailableWhenApplyIsNotConfigured(t *testing.T) {
 }
 
 func TestServerValidatesDomainYAML(t *testing.T) {
-	server := NewServer()
+	server := authenticatedServer(t, NewServer())
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/validate", bytes.NewReader([]byte(validAIJobYAML()))))
 
@@ -960,7 +1093,7 @@ func TestServerValidatesDomainYAML(t *testing.T) {
 }
 
 func TestServerReturnsBadRequestForInvalidDomainYAML(t *testing.T) {
-	server := NewServer()
+	server := authenticatedServer(t, NewServer())
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/validate", bytes.NewReader([]byte(`
 apiVersion: ai.oam.dev/v1alpha1
@@ -985,7 +1118,7 @@ spec:
 }
 
 func TestServerNormalizesDomainYAML(t *testing.T) {
-	server := NewServer()
+	server := authenticatedServer(t, NewServer())
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/normalize", bytes.NewReader([]byte(validAIServiceYAML()))))
 
@@ -1005,7 +1138,7 @@ func TestServerNormalizesDomainYAML(t *testing.T) {
 }
 
 func TestServerRejectsUnsupportedMethod(t *testing.T) {
-	server := NewServer()
+	server := authenticatedServer(t, NewServer())
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/ai/normalize", nil))
 

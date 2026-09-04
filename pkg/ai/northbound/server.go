@@ -26,6 +26,7 @@ type Options struct {
 	Artifacts ArtifactStore
 	Datasets  DatasetStore
 	Audits    AuditStore
+	Auth      *authConfig
 }
 
 type errorResponse struct {
@@ -133,33 +134,25 @@ func NewServer() http.Handler {
 }
 
 func NewServerWithOptions(options Options) http.Handler {
+	auth := newConsoleAuthWithConfig(options.Auth)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", console)
+	mux.HandleFunc("/", auth.handleRoot)
+	mux.HandleFunc("/login", auth.handleLogin)
+	mux.HandleFunc("/logout", auth.handleLogout)
+	mux.HandleFunc("/user", auth.handleConsolePage(consoleRoleUser))
+	mux.HandleFunc("/monitor", auth.handleConsolePage(consoleRoleMonitor))
 	mux.HandleFunc("/healthz", healthz)
-	mux.HandleFunc("/api/v1/ai/validate", validate)
-	mux.HandleFunc("/api/v1/ai/normalize", normalize)
-	mux.HandleFunc("/api/v1/ai/applications", applications(options))
-	mux.HandleFunc("/api/v1/ai/applications/", applicationDetail(options))
-	mux.HandleFunc("/api/v1/ai/audits", audits(options.Audits))
-	mux.HandleFunc("/api/v1/ai/artifacts", artifacts(options.Artifacts))
-	mux.HandleFunc("/api/v1/ai/models", models(options.Artifacts))
-	mux.HandleFunc("/api/v1/ai/models/", modelDetail(options))
-	mux.HandleFunc("/api/v1/ai/datasets", datasets(options.Datasets))
-	mux.HandleFunc("/api/v1/ai/deliveries/", deliveries(options))
+	mux.HandleFunc("/api/v1/ai/validate", auth.requireSession(validate))
+	mux.HandleFunc("/api/v1/ai/normalize", auth.requireSession(normalize))
+	mux.HandleFunc("/api/v1/ai/applications", auth.requireSession(applications(options)))
+	mux.HandleFunc("/api/v1/ai/applications/", auth.requireSession(applicationDetail(options)))
+	mux.HandleFunc("/api/v1/ai/audits", auth.requireSession(audits(options.Audits)))
+	mux.HandleFunc("/api/v1/ai/artifacts", auth.requireSession(artifacts(options.Artifacts)))
+	mux.HandleFunc("/api/v1/ai/models", auth.requireSession(models(options.Artifacts)))
+	mux.HandleFunc("/api/v1/ai/models/", auth.requireSession(modelDetail(options)))
+	mux.HandleFunc("/api/v1/ai/datasets", auth.requireSession(datasets(options.Datasets)))
+	mux.HandleFunc("/api/v1/ai/deliveries/", auth.requireSession(deliveries(options)))
 	return mux
-}
-
-func console(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(consoleHTML))
 }
 
 func healthz(w http.ResponseWriter, r *http.Request) {
@@ -1054,6 +1047,9 @@ spec:
 }
 
 func actorFromRequest(r *http.Request) string {
+	if value := requestIdentityUser(r, defaultAuthConfig()); value != "" {
+		return value
+	}
 	for _, header := range []string{"X-AI-User", "X-User", "X-Forwarded-User"} {
 		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
 			return value
