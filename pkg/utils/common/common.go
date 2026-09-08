@@ -31,6 +31,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
@@ -102,10 +103,15 @@ func init() {
 type HTTPOption struct {
 	Username        string `json:"username,omitempty"`
 	Password        string `json:"password,omitempty"`
+	BearerToken     string `json:"bearerToken,omitempty"` // RFC 6750. Mutually exclusive with Username/Password.
 	CaFile          string `json:"caFile,omitempty"`
 	CertFile        string `json:"certFile,omitempty"`
 	KeyFile         string `json:"keyFile,omitempty"`
 	InsecureSkipTLS bool   `json:"insecureSkipTLS,omitempty"`
+	// PlainHTTP signals that the caller wants the OCI client to use plain
+	// HTTP rather than TLS. Honored only on the OCI fetch path. Insecure
+	// by design; users opt in via the Opaque Secret key insecurePlainHTTP.
+	PlainHTTP bool `json:"plainHTTP,omitempty"`
 }
 
 // InitBaseRestConfig will return reset config for create controller runtime client
@@ -137,6 +143,14 @@ func HTTPGetResponse(ctx context.Context, url string, opts *HTTPOption) (*http.R
 	if opts != nil && len(opts.Username) != 0 && len(opts.Password) != 0 {
 		req.SetBasicAuth(opts.Username, opts.Password)
 	}
+	if opts != nil && opts.BearerToken != "" {
+		if opts.Username != "" || opts.Password != "" {
+			return nil, fmt.Errorf(
+				"HTTPOption sets both basic-auth and a bearer token: " +
+					"at most one credential method MUST be configured (RFC 6750 §2)")
+		}
+		req.Header.Set("Authorization", "Bearer "+opts.BearerToken)
+	}
 	if opts != nil && opts.InsecureSkipTLS {
 		httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // nolint
 	}
@@ -162,11 +176,85 @@ func HTTPGetResponse(ctx context.Context, url string, opts *HTTPOption) (*http.R
 		tr.TLSClientConfig = tlsConfig
 		defer tr.CloseIdleConnections()
 		httpClient.Transport = &tr
+		if len(tlsConfig.Certificates) != 0 {
+			// A client certificate is presented during the TLS handshake, so it
+			// belongs to the transport rather than to a header. net/http strips
+			// Authorization when a redirect crosses to another origin, but it
+			// cannot strip a client certificate: every hop in the chain reuses
+			// this transport and so authenticates the caller to whatever host it
+			// lands on. Refuse the crossing instead.
+			httpClient.CheckRedirect = rejectCrossOriginRedirect
+		}
 	}
 	return httpClient.Do(req)
 }
 
-// HTTPGetWithOption use HTTP option and default client to send get request
+// defaultRedirectLimit matches net/http's own cap, which a custom
+// CheckRedirect replaces rather than adds to.
+const defaultRedirectLimit = 10
+
+// rejectCrossOriginRedirect follows redirects only while they stay on the
+// original request's origin. It exists for requests that carry a TLS client
+// certificate; see the call site in HTTPGetResponse.
+func rejectCrossOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	if len(via) >= defaultRedirectLimit {
+		return fmt.Errorf("stopped after %d redirects", defaultRedirectLimit)
+	}
+	if origin := via[0].URL; !sameOriginURL(origin, req.URL) {
+		return fmt.Errorf("refusing to follow the redirect from %s to %s: this request presents a TLS client certificate, which would be sent to the redirect target", redactedOrigin(origin), redactedOrigin(req.URL))
+	}
+	return nil
+}
+
+func redactedOrigin(u *neturl.URL) string {
+	return u.Scheme + "://" + u.Host
+}
+
+// SameOrigin reports whether two URLs address the same origin, meaning the
+// same scheme and the same host. A scheme's default port counts as equal to
+// that port written out, so "https://example.com" and "https://example.com:443"
+// are the same origin. The scheme itself has to match: an https:// origin and
+// an http:// one on the same host are different origins, since sending a
+// credential to the latter would put it on the wire in cleartext.
+func SameOrigin(a, b string) bool {
+	ua, errA := neturl.Parse(a)
+	ub, errB := neturl.Parse(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return sameOriginURL(ua, ub)
+}
+
+func sameOriginURL(a, b *neturl.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) && normalizedHostPort(a) == normalizedHostPort(b)
+}
+
+// normalizedHostPort renders a URL's host as a lowercase host:port, filling in
+// the scheme's default port when the URL leaves it out so that the two
+// spellings of one origin compare equal.
+func normalizedHostPort(u *neturl.URL) string {
+	port := u.Port()
+	if port == "" {
+		switch strings.ToLower(u.Scheme) {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	return strings.ToLower(u.Hostname()) + ":" + port
+}
+
+// HTTPGetWithOption use HTTP option and default client to send get request.
+// Non-2xx responses are surfaced as an error including the status line plus a
+// truncated body excerpt. Without this guard, registry 401/403 bodies (HTML
+// or short text) would be returned as raw bytes and later parsed as YAML or
+// gzip-tar, producing misleading "no chart name found" / "cannot unmarshal
+// string into Go value of type repo.IndexFile" failures instead of a clear
+// "HTTP 401 Unauthorized" message.
 func HTTPGetWithOption(ctx context.Context, url string, opts *HTTPOption) ([]byte, error) {
 	resp, err := HTTPGetResponse(ctx, url, opts)
 	if err != nil {
@@ -174,6 +262,14 @@ func HTTPGetWithOption(ctx context.Context, url string, opts *HTTPOption) ([]byt
 	}
 	//nolint:errcheck
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		excerpt := strings.TrimSpace(string(body))
+		if excerpt == "" {
+			return nil, fmt.Errorf("HTTP %s", resp.Status)
+		}
+		return nil, fmt.Errorf("HTTP %s: %s", resp.Status, excerpt)
+	}
 	return io.ReadAll(resp.Body)
 }
 

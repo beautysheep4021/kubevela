@@ -46,6 +46,8 @@ import (
 	wfContext "github.com/kubevela/workflow/pkg/context"
 	"github.com/kubevela/workflow/pkg/executor"
 	wffeatures "github.com/kubevela/workflow/pkg/features"
+	wfhttp "github.com/kubevela/workflow/pkg/providers/http"
+	wflegacyhttp "github.com/kubevela/workflow/pkg/providers/legacy/http"
 
 	ctrlrec "github.com/kubevela/pkg/controller/reconciler"
 
@@ -527,12 +529,20 @@ func (r *Reconciler) handleFinalizers(ctx monitorContext.Context, app *v1beta1.A
 	return r.result(nil).end(false)
 }
 
-func (r *Reconciler) endWithNegativeCondition(ctx context.Context, app *v1beta1.Application, condition condition.Condition, phase common.ApplicationPhase) (ctrl.Result, error) {
-	app.SetConditions(condition)
+func (r *Reconciler) endWithNegativeCondition(ctx context.Context, app *v1beta1.Application, cond condition.Condition, phase common.ApplicationPhase) (ctrl.Result, error) {
+	// Flip the rollup Ready condition alongside the failing sub-condition so health checkers
+	// polling Ready see the failure instead of the last successful reconcile (#7164).
+	app.SetConditions(cond, condition.Condition{
+		Type:               condition.ConditionType(common.ReadyCondition.String()),
+		Status:             corev1.ConditionFalse,
+		LastTransitionTime: metav1.Now(),
+		Reason:             condition.ReasonReconcileError,
+		Message:            cond.Message,
+	})
 	if err := r.patchStatus(ctx, app, phase); err != nil {
 		return r.result(errors.WithMessage(err, "cannot update application status")).ret()
 	}
-	return r.result(fmt.Errorf("object level reconcile error, type: %q, msg: %q", string(condition.Type), condition.Message)).ret()
+	return r.result(fmt.Errorf("object level reconcile error, type: %q, msg: %q", string(cond.Type), cond.Message)).ret()
 }
 
 // Application status can be updated by two methods: patch and update.
@@ -573,7 +583,7 @@ func (r *Reconciler) writeStatusByMethod(ctx context.Context, method method, app
 		panic("unknown method")
 	}
 	if err := f(); err != nil {
-		executor.StepStatusCache.Store(fmt.Sprintf("%s-%s", app.Name, app.Namespace), -1)
+		executor.StepStatusCache.Put(fmt.Sprintf("%s-%s", app.Name, app.Namespace), -1, time.Minute*5)
 		return err
 	}
 	if feature.DefaultMutableFeatureGate.Enabled(features.EnableApplicationStatusMetrics) {
@@ -735,6 +745,12 @@ func Setup(mgr ctrl.Manager, args core.Args) error {
 	// Register application status metrics after feature gates are initialized
 	metrics.RegisterApplicationStatusMetrics()
 
+	// Initialize the workflow cache after manager starts
+	// This ensures that the cache is ready before any workflow execution occurs
+	if err := mgr.Add(&cacheInitializer{}); err != nil {
+		return err
+	}
+
 	// Add a runnable to initialize PolicyScopeIndex after manager starts
 	// This ensures the cache is ready before we try to list PolicyDefinitions
 	if err := mgr.Add(&policyScopeIndexInitializer{client: mgr.GetClient()}); err != nil {
@@ -748,6 +764,15 @@ func Setup(mgr ctrl.Manager, args core.Args) error {
 		options:  parseOptions(args),
 	}
 	return reconciler.SetupWithManager(mgr)
+}
+
+type cacheInitializer struct{}
+
+func (r *cacheInitializer) Start(ctx context.Context) error {
+	executor.InitStepStatusCache(ctx)
+	wfhttp.InitRateLimiter(ctx)
+	wflegacyhttp.InitRateLimiter(ctx)
+	return nil
 }
 
 // policyScopeIndexInitializer is a Runnable that initializes the PolicyScopeIndex

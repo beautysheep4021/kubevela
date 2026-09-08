@@ -51,6 +51,7 @@ import (
 	"github.com/oam-dev/kubevela/cmd/core/app/hooks"
 	"github.com/oam-dev/kubevela/cmd/core/app/hooks/crdvalidation"
 	"github.com/oam-dev/kubevela/cmd/core/app/options"
+	addonservice "github.com/oam-dev/kubevela/pkg/addon/service"
 	"github.com/oam-dev/kubevela/pkg/auth"
 	"github.com/oam-dev/kubevela/pkg/cache"
 	commonconfig "github.com/oam-dev/kubevela/pkg/controller/common"
@@ -110,7 +111,7 @@ func run(ctx context.Context, coreOptions *options.CoreOptions) error {
 
 	// Sync configurations
 	klog.V(2).InfoS("Syncing configurations to global variables")
-	syncConfigurations(coreOptions)
+	syncConfigurations(ctx, coreOptions)
 	klog.InfoS("Configuration sync completed successfully")
 
 	// Setup logging
@@ -128,6 +129,15 @@ func run(ctx context.Context, coreOptions *options.CoreOptions) error {
 	if err != nil {
 		klog.ErrorS(err, "Failed to configure Kubernetes client")
 		return fmt.Errorf("failed to configure Kubernetes client: %w", err)
+	}
+
+	// The vela/addon CueX provider is registered on the compilers unconditionally
+	// (the addon ComponentDefinition imports it and could not compile otherwise), but
+	// it only does anything once a renderer is installed. Wire that up here, after
+	// flags have been parsed, so it can be gated.
+	if utilfeature.DefaultMutableFeatureGate.Enabled(features.EnableAddonComponent) {
+		addonservice.Register()
+		klog.InfoS("Addon-as-component enabled, registered the addon render service")
 	}
 
 	// Start profiling server
@@ -200,14 +210,18 @@ func run(ctx context.Context, coreOptions *options.CoreOptions) error {
 }
 
 // syncConfigurations syncs parsed config values to external package global variables
-func syncConfigurations(coreOptions *options.CoreOptions) {
+func syncConfigurations(ctx context.Context, coreOptions *options.CoreOptions) {
 	if coreOptions.Workflow != nil {
 		klog.V(3).InfoS("Syncing workflow configuration")
 		coreOptions.Workflow.SyncToWorkflowGlobals()
 	}
 	if coreOptions.CUE != nil {
 		klog.V(3).InfoS("Syncing CUE configuration")
-		coreOptions.CUE.SyncToCUEGlobals()
+		coreOptions.CUE.SyncToCUEGlobals(ctx)
+	}
+	if coreOptions.Helm != nil {
+		klog.V(3).InfoS("Syncing Helm configuration")
+		coreOptions.Helm.SyncToHelmGlobals(ctx)
 	}
 	if coreOptions.Application != nil {
 		klog.V(3).InfoS("Syncing application configuration")

@@ -18,8 +18,11 @@ package appfile
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"strings"
 
@@ -364,8 +367,90 @@ func (af *Appfile) SetOAMContract(comp *types.ComponentManifest) error {
 		if err := af.setWorkloadRefToTrait(workloadRef, trait); err != nil && !IsNotFoundInAppFile(err) {
 			return errors.WithMessagef(err, "cannot set workload reference to trait %q", trait.GetName())
 		}
+		if err := af.propagatePodDisruptiveHash(comp.ComponentOutput, trait); err != nil && !IsNotFoundInAppFile(err) {
+			return errors.WithMessagef(err, "cannot propagate podDisruptive hash for trait %q", trait.GetName())
+		}
 	}
 	return nil
+}
+
+const podRestartHashAnnotationPrefix = "app.oam.dev/trait-restart-hash-"
+
+const maxAnnotationKeyNameLength = 63
+
+func podRestartHashAnnotationKey(lookupType string) string {
+	key := podRestartHashAnnotationPrefix + lookupType
+	if len(key) <= maxAnnotationKeyNameLength {
+		return key
+	}
+	sum := sha256.Sum256([]byte(lookupType))
+	return podRestartHashAnnotationPrefix + hex.EncodeToString(sum[:])[:16]
+}
+
+func (af *Appfile) propagatePodDisruptiveHash(workload *unstructured.Unstructured, trait *unstructured.Unstructured) error {
+	traitType := trait.GetLabels()[oam.TraitTypeLabel]
+	if traitType == "" || traitType == definition.AuxiliaryWorkload {
+		return nil
+	}
+	lookupType := traitType
+	if strings.Contains(lookupType, "-") {
+		splitName := lookupType[0:strings.LastIndex(lookupType, "-")]
+		if _, ok := af.RelatedTraitDefinitions[splitName]; ok {
+			lookupType = splitName
+		}
+	}
+	traitDef, ok := af.RelatedTraitDefinitions[lookupType]
+	if !ok {
+		return errors.Errorf("TraitDefinition %s not found in appfile", lookupType)
+	}
+	if !traitDef.Spec.PodDisruptive {
+		return nil
+	}
+
+	if _, found, err := unstructured.NestedMap(workload.UnstructuredContent(), "spec", "template"); err != nil || !found {
+		return nil //nolint:nilerr
+	}
+
+	hash, err := computeTraitContentHash(trait)
+	if err != nil {
+		return errors.Wrapf(err, "failed to hash content of trait %q", trait.GetName())
+	}
+
+	templateAnnotations, _, err := unstructured.NestedStringMap(workload.UnstructuredContent(), "spec", "template", "metadata", "annotations")
+	if err != nil {
+		return err
+	}
+	if templateAnnotations == nil {
+		templateAnnotations = map[string]string{}
+	}
+
+	templateAnnotations[podRestartHashAnnotationKey(lookupType)] = hash
+	return unstructured.SetNestedStringMap(workload.UnstructuredContent(), templateAnnotations, "spec", "template", "metadata", "annotations")
+}
+
+var oamInjectedMetadataFields = [][]string{
+	{"resourceVersion"},
+	{"uid"},
+	{"creationTimestamp"},
+	{"generation"},
+	{"managedFields"},
+	{"ownerReferences"},
+	{"labels", oam.LabelAppRevision},
+	{"labels", oam.LabelAppRevisionHash},
+}
+
+func computeTraitContentHash(trait *unstructured.Unstructured) (string, error) {
+	cp := trait.DeepCopy()
+	for _, field := range oamInjectedMetadataFields {
+		unstructured.RemoveNestedField(cp.Object, append([]string{"metadata"}, field...)...)
+	}
+	unstructured.RemoveNestedField(cp.Object, "status")
+	data, err := json.Marshal(cp.Object)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])[:16], nil
 }
 
 // workload and trait in the same component both have these labels, except componentRevision which should be evaluated with input/output
@@ -391,19 +476,60 @@ func (af *Appfile) generateAndFilterCommonLabels(compName string) map[string]str
 }
 
 // workload and trait both have these annotations
+//
+// The annotation map is read once and written once. util.AddAnnotations and
+// util.RemoveAnnotations would each fetch and set it again, and GetAnnotations
+// deep-copies on every call, so doing the merge and the filtering in one pass here
+// halves the allocations per rendered object.
 func (af *Appfile) filterAndSetAnnotations(obj *unstructured.Unstructured) {
-	var allFilterAnnotation []string
-	allFilterAnnotation = append(allFilterAnnotation, types.DefaultFilterAnnots...)
-
-	passedFilterAnnotation, ok := af.AppAnnotations[oam.AnnotationFilterAnnotationKeys]
-	if ok {
-		allFilterAnnotation = append(allFilterAnnotation, strings.Split(passedFilterAnnotation, ",")...)
+	ann := obj.GetAnnotations()
+	if ann == nil && af.AppAnnotations == nil {
+		// Nothing to merge and nothing to filter. Matches util.AddAnnotations, whose
+		// MergeMapOverrideWithDst returns nil when both sides are nil, so the
+		// metadata.annotations field stays absent rather than becoming an empty map.
+		return
+	}
+	if ann == nil {
+		ann = map[string]string{}
 	}
 
+	// The "-"/"skip" value of app.oam.dev/last-applied-configuration is a statement
+	// an object makes about itself (see pkg/utils/apply), so it must not be
+	// inherited. The addon-as-component flow sets it on the Application it renders
+	// because that single object can exceed Kubernetes' annotation size limit;
+	// letting it pass down would disable three-way merge for every resource inside
+	// the addon and break `vela status --tree --format raw`, which feeds this value
+	// to a JSON parser (pkg/resourcetracker/tree.go).
+	//
+	// Read before the merge below, because the Application's value would otherwise
+	// overwrite the component's own.
+	own := ann[oam.AnnotationLastAppliedConfig]
+
 	// pass application's all annotations
-	util.AddAnnotations(obj, af.AppAnnotations)
+	maps.Copy(ann, af.AppAnnotations)
 	// remove useless annotations for workload/trait
-	util.RemoveAnnotations(obj, allFilterAnnotation)
+	for _, k := range types.DefaultFilterAnnots {
+		delete(ann, k)
+	}
+	if passed, ok := af.AppAnnotations[oam.AnnotationFilterAnnotationKeys]; ok {
+		for _, k := range strings.Split(passed, ",") {
+			delete(ann, k)
+		}
+	}
+
+	switch {
+	case own != "":
+		// The component set this key on its own output. Whatever it says, it is a
+		// statement about the component's own resource, so it wins over the copy
+		// inherited from the Application above -- including a recorded
+		// configuration, not just the "-"/"skip" opt-out.
+		ann[oam.AnnotationLastAppliedConfig] = own
+	case oam.IsSkipLastAppliedConfig(ann[oam.AnnotationLastAppliedConfig]):
+		// inherited from the parent Application; drop it
+		delete(ann, oam.AnnotationLastAppliedConfig)
+	}
+
+	obj.SetAnnotations(ann)
 }
 
 func (af *Appfile) setNamespace(obj *unstructured.Unstructured) {
