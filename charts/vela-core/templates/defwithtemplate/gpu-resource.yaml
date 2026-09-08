@@ -19,7 +19,7 @@ spec:
         	let gpuContent = {
         		resources: {
         			requests: "nvidia.com/gpu": parameter.count
-        			limits: "nvidia.com/gpu":   parameter.count
+        			limits: "nvidia.com/gpu": parameter.count
         		}
         	}
 
