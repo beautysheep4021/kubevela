@@ -845,7 +845,7 @@ const consoleHTML = `<!doctype html>
     }
   </style>
 </head>
-  <body data-role="__PAGE_ROLE__">
+  <body data-role="__PAGE_ROLE__" data-account-tenant="__ACCOUNT_TENANT__" data-account-namespace="__ACCOUNT_NAMESPACE__">
   <main>
     <aside class="sidebar">
       <div class="sidebar-brand">
@@ -886,6 +886,10 @@ const consoleHTML = `<!doctype html>
           <div class="status-card">
             <div class="label">接口健康</div>
             <div class="metric" id="health">检查中</div>
+          </div>
+          <div class="status-card">
+            <div class="label">当前账号范围</div>
+            <div class="metric" id="account-scope">未限定</div>
           </div>
           <div class="status-card">
             <div class="label">校验入口</div>
@@ -1642,130 +1646,138 @@ const consoleHTML = `<!doctype html>
     ["kind", "name", "namespace", "component", "tenant", "project", "environment", "owner", "runtime", "image", "modelName", "modelVersion", "modelURI", "replicas", "port", "jobKind", "ttl", "datasetURI", "outputURI"].forEach(function(id) {
       fields[id] = document.getElementById(id);
     });
+    var accountTenant = (document.body.getAttribute("data-account-tenant") || "").trim();
+    var accountNamespace = (document.body.getAttribute("data-account-namespace") || "").trim();
     var demoMode = /(?:\?|&)demo=local(?:&|$)/.test(window.location.search);
     var demoState = {
       applications: [
         {
-          namespace: "sock-shop",
-          name: "customer-sft-demo",
+          namespace: "ai-tenant-a",
+          name: "tenant-a-training-job",
           workloadTypes: ["job"],
           phase: "succeeded",
           healthy: true,
           aiMetadata: {
-            "ai.oam.dev/tenant": "demo-tenant",
-            "ai.oam.dev/project": "sft-training",
-            "ai.oam.dev/environment": "poc",
-            "ai.oam.dev/owner": "ai-platform"
+            "ai.oam.dev/tenant": "tenant-a",
+            "ai.oam.dev/project": "tenant-a-training",
+            "ai.oam.dev/environment": "test",
+            "ai.oam.dev/owner": "tenant-a-user"
           },
           resourceSummary: {cpuMilli: 8000, memoryMi: 32768, gpu: 1},
-          components: [{name: "customer-sft-demo-trainer"}],
-          pods: [{name: "customer-sft-demo-pod-0", phase: "Succeeded", containers: ["trainer"]}],
-          pod: "customer-sft-demo-pod-0",
+          components: [{name: "tenant-a-training-job-trainer"}],
+          pods: [{name: "tenant-a-training-job-pod-0", phase: "Succeeded", containers: ["trainer"]}],
+          pod: "tenant-a-training-job-pod-0",
           container: "trainer",
-          logs: "train-start\nepoch=1 loss=0.30\nepoch=2 loss=0.12\nAI_RESULT_JSON={\"modelURI\":\"inline://models/customer-sft-demo/v1\",\"metrics\":{\"loss\":0.12,\"accuracy\":0.98},\"summary\":\"sft-fine-tuned\"}\ntrain-complete",
+          logs: "train-start\nepoch=1 loss=0.30\nepoch=2 loss=0.12\nAI_RESULT_JSON={\"modelURI\":\"inline://models/tenant-a-training-job/v1\",\"metrics\":{\"loss\":0.12,\"accuracy\":0.98},\"summary\":\"tenant-a-training-complete\"}\ntrain-complete",
           deliveryResult: {
-            modelURI: "inline://models/customer-sft-demo/v1",
+            modelURI: "inline://models/tenant-a-training-job/v1",
             metrics: {loss: 0.12, accuracy: 0.98},
-            summary: "sft-fine-tuned"
+            summary: "tenant-a-training-complete"
           }
         },
         {
-          namespace: "sock-shop",
-          name: "customer-sft-demo-service",
+          namespace: "ai-tenant-a",
+          name: "tenant-a-inference-service",
           workloadTypes: ["service"],
           phase: "running",
           healthy: true,
           aiMetadata: {
-            "ai.oam.dev/tenant": "demo-tenant",
-            "ai.oam.dev/project": "sft-training",
-            "ai.oam.dev/environment": "poc",
-            "ai.oam.dev/owner": "ai-platform"
+            "ai.oam.dev/tenant": "tenant-a",
+            "ai.oam.dev/project": "tenant-a-inference",
+            "ai.oam.dev/environment": "test",
+            "ai.oam.dev/owner": "tenant-a-user"
           },
           resourceSummary: {cpuMilli: 2000, memoryMi: 4096, gpu: 0},
-          components: [{name: "customer-sft-demo-service"}],
-          pods: [{name: "customer-sft-demo-service-pod-0", phase: "Running", containers: ["http"]}],
-          pod: "customer-sft-demo-service-pod-0",
+          components: [{name: "tenant-a-inference-service"}],
+          pods: [{name: "tenant-a-inference-service-pod-0", phase: "Running", containers: ["http"]}],
+          pod: "tenant-a-inference-service-pod-0",
           container: "http",
-          logs: "service booted\nmodelURI=inline://models/customer-sft-demo/v1\nhealthz ok",
-          modelURI: "inline://models/customer-sft-demo/v1"
+          logs: "service booted\nmodelURI=inline://models/tenant-a-training-job/v1\nhealthz ok",
+          modelURI: "inline://models/tenant-a-training-job/v1"
         },
         {
-          namespace: "ai-demo",
-          name: "sentiment-demo",
+          namespace: "ai-tenant-b",
+          name: "tenant-b-evaluation-job",
+          workloadTypes: ["job"],
+          phase: "succeeded",
+          healthy: true,
+          aiMetadata: {
+            "ai.oam.dev/tenant": "tenant-b",
+            "ai.oam.dev/project": "tenant-b-evaluation",
+            "ai.oam.dev/environment": "test",
+            "ai.oam.dev/owner": "tenant-b-user"
+          },
+          resourceSummary: {cpuMilli: 4000, memoryMi: 8192, gpu: 0},
+          components: [{name: "tenant-b-evaluation-job-runner"}],
+          pods: [{name: "tenant-b-evaluation-job-pod-0", phase: "Succeeded", containers: ["eval"]}],
+          pod: "tenant-b-evaluation-job-pod-0",
+          container: "eval",
+          logs: "eval-start\nAI_RESULT_JSON={\"modelURI\":\"inline://models/tenant-b-evaluation-job/v1\",\"metrics\":{\"accuracy\":0.94},\"summary\":\"tenant-b-evaluation-passed\"}\neval-complete",
+          deliveryResult: {
+            modelURI: "inline://models/tenant-b-evaluation-job/v1",
+            metrics: {accuracy: 0.94},
+            summary: "tenant-b-evaluation-passed"
+          }
+        },
+        {
+          namespace: "ai-tenant-b",
+          name: "tenant-b-chat-service",
           workloadTypes: ["service"],
           phase: "running",
           healthy: true,
           aiMetadata: {
-            "ai.oam.dev/tenant": "demo-tenant",
-            "ai.oam.dev/project": "sentiment",
-            "ai.oam.dev/environment": "poc",
-            "ai.oam.dev/owner": "ai-platform"
+            "ai.oam.dev/tenant": "tenant-b",
+            "ai.oam.dev/project": "tenant-b-serving",
+            "ai.oam.dev/environment": "test",
+            "ai.oam.dev/owner": "tenant-b-user"
           },
-          resourceSummary: {cpuMilli: 2000, memoryMi: 4096, gpu: 0},
-          components: [{name: "sentiment-api"}],
-          pods: [{name: "sentiment-demo-pod-0", phase: "Running", containers: ["http"]}],
-          pod: "sentiment-demo-pod-0",
+          resourceSummary: {cpuMilli: 4000, memoryMi: 8192, gpu: 1},
+          components: [{name: "tenant-b-chat-service"}],
+          pods: [{name: "tenant-b-chat-service-pod-0", phase: "Running", containers: ["http"]}],
+          pod: "tenant-b-chat-service-pod-0",
           container: "http",
-          logs: "server started\nGET /healthz 200\nhealthz ok"
-        },
-        {
-          namespace: "ai-demo",
-          name: "fraud-detector",
-          workloadTypes: ["service"],
-          phase: "pending",
-          healthy: false,
-          aiMetadata: {
-            "ai.oam.dev/tenant": "risk-team",
-            "ai.oam.dev/project": "fraud",
-            "ai.oam.dev/environment": "prod",
-            "ai.oam.dev/owner": "risk-ops"
-          },
-          resourceSummary: {cpuMilli: 6000, memoryMi: 12288, gpu: 1},
-          components: [{name: "fraud-api"}],
-          pods: [{name: "fraud-detector-pod-0", phase: "Pending", containers: ["http"]}],
-          pod: "fraud-detector-pod-0",
-          container: "http",
-          logs: "image pull pending\nwaiting for model artifact"
+          logs: "service booted\nmodelURI=oss://models/tenant-b-chat/v1\nhealthz ok",
+          modelURI: "oss://models/tenant-b-chat/v1"
         }
       ],
       models: [
         {
-          namespace: "sock-shop",
-          name: "customer-sft-demo",
-          modelURI: "inline://models/customer-sft-demo/v1",
+          namespace: "ai-tenant-a",
+          name: "tenant-a-training-job",
+          modelURI: "inline://models/tenant-a-training-job/v1",
           status: "trained",
           evaluationStatus: "passed",
           visibility: "private",
           metrics: {loss: 0.12, accuracy: 0.98},
-          summary: "sft-fine-tuned"
+          summary: "tenant-a-training-complete"
         },
         {
-          namespace: "ai-demo",
-          name: "sentiment-base",
-          modelURI: "oss://models/sentiment-base/v1",
+          namespace: "ai-tenant-b",
+          name: "tenant-b-chat",
+          modelURI: "oss://models/tenant-b-chat/v1",
           status: "released",
           evaluationStatus: "passed",
-          visibility: "public",
-          metrics: {accuracy: 0.96},
-          summary: "baseline"
+          visibility: "private",
+          metrics: {accuracy: 0.94},
+          summary: "tenant-b-chat-ready"
         }
       ],
       datasets: [
         {
-          namespace: "sock-shop",
-          name: "customer-sft-demo",
-          displayName: "客服问答 SFT 数据集",
-          datasetURI: "inline://datasets/customer-sft-demo",
+          namespace: "ai-tenant-a",
+          name: "tenant-a-training-data",
+          displayName: "Tenant A 训练数据集",
+          datasetURI: "inline://datasets/tenant-a-training-data",
           format: "sharegpt-jsonl",
           purpose: "sft",
           status: "validated",
           visibility: "private"
         },
         {
-          namespace: "sock-shop",
-          name: "customer-eval",
-          displayName: "客服问答评测集",
-          datasetURI: "inline://datasets/customer-eval",
+          namespace: "ai-tenant-b",
+          name: "tenant-b-evaluation-data",
+          displayName: "Tenant B 评测数据集",
+          datasetURI: "inline://datasets/tenant-b-evaluation-data",
           format: "alpaca-jsonl",
           purpose: "evaluation",
           status: "validated",
@@ -1774,36 +1786,97 @@ const consoleHTML = `<!doctype html>
       ],
       artifacts: [
         {
-          namespace: "sock-shop",
-          name: "customer-sft-demo-v1",
-          modelURI: "inline://models/customer-sft-demo/v1",
+          namespace: "ai-tenant-a",
+          name: "tenant-a-training-job-v1",
+          modelURI: "inline://models/tenant-a-training-job/v1",
           status: "ready",
           framework: "demo",
           source: "AIJob",
-          owner: "ai-platform"
+          owner: "tenant-a-user"
+        },
+        {
+          namespace: "ai-tenant-b",
+          name: "tenant-b-evaluation-job-v1",
+          modelURI: "inline://models/tenant-b-evaluation-job/v1",
+          status: "ready",
+          framework: "demo",
+          source: "AIJob",
+          owner: "tenant-b-user"
         }
       ],
       audits: [
         {
-          time: "2026-08-24 09:00:00",
+          time: "2026-09-10 09:00:00",
           action: "deploy",
-          namespace: "sock-shop",
-          name: "customer-sft-demo",
-          actor: "console",
+          namespace: "ai-tenant-a",
+          name: "tenant-a-training-job",
+          actor: "admin",
           success: true,
-          message: "AIJob 已提交"
+          message: "Tenant A AIJob 已提交"
         },
         {
-          time: "2026-08-24 09:12:00",
+          time: "2026-09-10 09:12:00",
           action: "publish-service",
-          namespace: "sock-shop",
-          name: "customer-sft-demo",
-          actor: "console",
+          namespace: "ai-tenant-a",
+          name: "tenant-a-inference-service",
+          actor: "admin",
           success: true,
-          message: "已发布为服务"
+          message: "Tenant A AIService 已发布"
+        },
+        {
+          time: "2026-09-10 10:00:00",
+          action: "deploy",
+          namespace: "ai-tenant-b",
+          name: "tenant-b-evaluation-job",
+          actor: "tenant-b",
+          success: true,
+          message: "Tenant B AIJob 已提交"
+        },
+        {
+          time: "2026-09-10 10:12:00",
+          action: "publish-service",
+          namespace: "ai-tenant-b",
+          name: "tenant-b-chat-service",
+          actor: "tenant-b",
+          success: true,
+          message: "Tenant B AIService 已发布"
         }
       ]
     };
+    function demoError(message) {
+      return {__demoError: message};
+    }
+    function demoNamespaceError(namespace) {
+      var requested = (namespace || "").trim();
+      if (!accountNamespace) {
+        return "";
+      }
+      if (!requested) {
+        return "namespace is required for account scope \"" + accountNamespace + "\"";
+      }
+      if (requested !== accountNamespace) {
+        return "namespace \"" + requested + "\" is outside account scope \"" + accountNamespace + "\"";
+      }
+      return "";
+    }
+    function applyAccountScopeDefaults() {
+      if (accountNamespace) {
+        setWizardValue("tenantNamespace", accountNamespace);
+        setValue("namespace", accountNamespace);
+      }
+      if (accountTenant) {
+        setValue("tenant", accountTenant);
+      }
+      if (accountNamespace && monitorFields.monitorNamespace) {
+        monitorFields.monitorNamespace.value = accountNamespace;
+      }
+      var accountScope = document.getElementById("account-scope");
+      if (accountScope) {
+        accountScope.textContent = accountNamespace
+          ? (accountTenant ? accountTenant + " / " : "") + accountNamespace
+          : "未限定";
+      }
+    }
     function demoClone(value) {
       return JSON.parse(JSON.stringify(value));
     }
@@ -1885,7 +1958,7 @@ const consoleHTML = `<!doctype html>
     }
     function demoApplicationFromCurrentForm() {
       var isService = fields.kind.value === "AIService";
-      var namespace = fields.namespace.value || "demo";
+      var namespace = fields.namespace.value || accountNamespace || "demo";
       var name = fields.name.value || "demo-task";
       var component = fields.component.value || name;
       var container = isService ? "http" : "trainer";
@@ -1921,10 +1994,28 @@ const consoleHTML = `<!doctype html>
       var url = new URL(path, window.location.origin);
       var pathname = url.pathname;
       var method = ((init && init.method) || "GET").toUpperCase();
-      var namespace = url.searchParams.get("namespace") || "";
+      var requestedNamespace = url.searchParams.get("namespace") || "";
+      var namespace = requestedNamespace || accountNamespace || "";
       var appMatch = pathname.match(/^\/api\/v1\/ai\/applications\/([^/]+)\/([^/]+)(?:\/(status|logs|probe|delete|restart|rerun))?$/);
       var modelMatch = pathname.match(/^\/api\/v1\/ai\/models\/([^/]+)\/([^/]+)(?:\/(evaluate|sync-evaluation))?$/);
       var deliveryMatch = pathname.match(/^\/api\/v1\/ai\/deliveries\/([^/]+)\/([^/]+)\/(result|publish-service)$/);
+      var listNamespaceError = demoNamespaceError(requestedNamespace || accountNamespace);
+      if (listNamespaceError && (pathname === "/api/v1/ai/applications" || pathname === "/api/v1/ai/artifacts" || pathname === "/api/v1/ai/models" || pathname === "/api/v1/ai/datasets" || pathname === "/api/v1/ai/audits")) {
+        return demoError(listNamespaceError);
+      }
+      var pathNamespace = appMatch
+        ? decodeURIComponent(appMatch[1])
+        : modelMatch
+          ? decodeURIComponent(modelMatch[1])
+          : deliveryMatch
+            ? decodeURIComponent(deliveryMatch[1])
+            : "";
+      if (pathNamespace) {
+        var pathNamespaceError = demoNamespaceError(pathNamespace);
+        if (pathNamespaceError) {
+          return demoError(pathNamespaceError);
+        }
+      }
       if (method === "GET" && pathname === "/api/v1/ai/applications") {
         return {items: demoList(namespace, demoState.applications)};
       }
@@ -1948,6 +2039,10 @@ const consoleHTML = `<!doctype html>
       }
       if (method === "POST" && pathname === "/api/v1/ai/applications") {
         var app = demoApplicationFromCurrentForm();
+        var appNamespaceError = demoNamespaceError(app.namespace);
+        if (appNamespaceError) {
+          return demoError(appNamespaceError);
+        }
         var dryRun = url.searchParams.get("dryRun") === "true";
         if (!dryRun) {
           demoUpsertApplication(app);
@@ -2124,8 +2219,13 @@ const consoleHTML = `<!doctype html>
       }
       if (pathname === "/api/v1/ai/models" && method === "POST") {
         var modelPayload = demoBody(init);
+        var modelNamespace = modelPayload.namespace || fields.namespace.value || "default";
+        var modelNamespaceError = demoNamespaceError(modelNamespace);
+        if (modelNamespaceError) {
+          return demoError(modelNamespaceError);
+        }
         var modelRecord = {
-          namespace: modelPayload.namespace || fields.namespace.value || "default",
+          namespace: modelNamespace,
           name: modelPayload.name || modelNameFromURI(modelPayload.modelURI || "model"),
           modelURI: modelPayload.modelURI || "inline://models/" + (modelPayload.name || "model") + "/v1",
           status: modelPayload.status || "trained",
@@ -2143,8 +2243,13 @@ const consoleHTML = `<!doctype html>
       }
       if (pathname === "/api/v1/ai/datasets" && method === "POST") {
         var datasetPayload = demoBody(init);
+        var datasetNamespace = datasetPayload.namespace || fields.namespace.value || "default";
+        var datasetNamespaceError = demoNamespaceError(datasetNamespace);
+        if (datasetNamespaceError) {
+          return demoError(datasetNamespaceError);
+        }
         var datasetRecord = {
-          namespace: datasetPayload.namespace || fields.namespace.value || "default",
+          namespace: datasetNamespace,
           name: datasetPayload.name || slug(datasetPayload.displayName || "dataset"),
           displayName: datasetPayload.displayName || datasetPayload.name || "Demo 数据集",
           datasetURI: datasetPayload.datasetURI || "inline://datasets/" + (datasetPayload.name || "dataset"),
@@ -2397,7 +2502,7 @@ const consoleHTML = `<!doctype html>
       var template = wizardFields.algorithmTemplate.value;
       var taskName = slug(wizardFields.taskDisplayName.value);
       setActiveTemplate(template);
-      var namespace = wizardFields.tenantNamespace.value || fields.namespace.value || "sock-shop";
+      var namespace = wizardFields.tenantNamespace.value || fields.namespace.value || accountNamespace || "sock-shop";
       if (template === "service") {
         setValue("kind", "AIService");
         setValue("name", taskName || "model-service-demo");
@@ -2578,12 +2683,12 @@ const consoleHTML = `<!doctype html>
       setWizardValue("schedulingPolicyTemplate", "cost-efficient");
       setWizardValue("resourceProfile", "small-cpu");
       applyResourceProfile("small-cpu");
-      setWizardValue("tenantNamespace", "ai-demo");
+      setWizardValue("tenantNamespace", accountNamespace || "ai-demo");
       setValue("kind", "AIService");
       setValue("name", "sentiment-demo");
-      setValue("namespace", "ai-demo");
+      setValue("namespace", accountNamespace || "ai-demo");
       setValue("component", "sentiment-api");
-      setValue("tenant", "demo-tenant");
+      setValue("tenant", accountTenant || "demo-tenant");
       setValue("project", "sentiment");
       setValue("environment", "poc");
       setValue("owner", "ai-platform");
@@ -2605,12 +2710,12 @@ const consoleHTML = `<!doctype html>
       setWizardValue("schedulingPolicyTemplate", "performance");
       setWizardValue("resourceProfile", "medium-gpu");
       applyResourceProfile("medium-gpu");
-      setWizardValue("tenantNamespace", "sock-shop");
+      setWizardValue("tenantNamespace", accountNamespace || "sock-shop");
       setValue("kind", "AIJob");
       setValue("name", "customer-sft-demo");
-      setValue("namespace", "sock-shop");
+      setValue("namespace", accountNamespace || "sock-shop");
       setValue("component", "customer-sft-demo-trainer");
-      setValue("tenant", "demo-tenant");
+      setValue("tenant", accountTenant || "demo-tenant");
       setValue("project", "sft-training");
       setValue("environment", "poc");
       setValue("owner", "ai-platform");
@@ -3138,6 +3243,9 @@ const consoleHTML = `<!doctype html>
     function fetchJSON(path, init) {
       var demo = demoResponse(path, init);
       if (demoMode && demo !== null) {
+        if (demo.__demoError) {
+          return Promise.reject(new Error(demo.__demoError));
+        }
         return Promise.resolve(demoClone(demo));
       }
       return fetch(path, init).then(function(res) {
@@ -3147,11 +3255,6 @@ const consoleHTML = `<!doctype html>
           }
           return data;
         });
-      }).catch(function(err) {
-        if (demo !== null) {
-          return demoClone(demo);
-        }
-        throw err;
       });
     }
     function post(path) {

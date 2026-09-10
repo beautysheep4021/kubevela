@@ -1,6 +1,7 @@
 package northbound
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -35,11 +36,41 @@ type consoleRolePage struct {
 	Password   string
 }
 
+type consoleAccount struct {
+	Role      consoleRole
+	Username  string
+	Password  string
+	Tenant    string
+	Namespace string
+}
+
 type authConfig struct {
 	RemoteAuthEnabled  bool
 	RemoteUserHeader   string
 	RemoteGroupsHeader string
 	AdminGroups        []string
+}
+
+var consoleAccounts = []consoleAccount{
+	{
+		Role:      consoleRoleUser,
+		Username:  "admin",
+		Password:  "shiyong",
+		Tenant:    "tenant-a",
+		Namespace: "ai-tenant-a",
+	},
+	{
+		Role:      consoleRoleUser,
+		Username:  "tenant-b",
+		Password:  "tenant-b-123456",
+		Tenant:    "tenant-b",
+		Namespace: "ai-tenant-b",
+	},
+	{
+		Role:     consoleRoleMonitor,
+		Username: "admin",
+		Password: "jiankong",
+	},
 }
 
 var consoleRolePages = map[consoleRole]consoleRolePage{
@@ -64,10 +95,14 @@ var consoleRolePages = map[consoleRole]consoleRolePage{
 }
 
 type sessionRecord struct {
-	Username string
-	Role     consoleRole
-	Expires  time.Time
+	Username  string
+	Role      consoleRole
+	Tenant    string
+	Namespace string
+	Expires   time.Time
 }
+
+type authSessionContextKey struct{}
 
 type consoleAuth struct {
 	mu       sync.RWMutex
@@ -135,12 +170,13 @@ func (a *consoleAuth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		username := strings.TrimSpace(r.Form.Get("username"))
 		password := r.Form.Get("password")
-		if username != consoleRolePages[role].Username || password != consoleRolePages[role].Password {
+		account, ok := findConsoleAccount(role, username, password)
+		if !ok {
 			w.WriteHeader(http.StatusUnauthorized)
 			a.writeLoginPage(w, role, "账号或密码错误", suffix)
 			return
 		}
-		token, err := a.createSession(role, username)
+		token, err := a.createSessionForAccount(account)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -205,17 +241,19 @@ func (a *consoleAuth) handleConsolePage(role consoleRole) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, renderConsoleHTML(role))
+		_, _ = io.WriteString(w, renderConsoleHTMLForSession(role, session))
 	}
 }
 
 func (a *consoleAuth) requireSession(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := a.authenticatedSession(r); !ok {
+		session, ok := a.authenticatedSession(r)
+		if !ok {
 			writeError(w, http.StatusUnauthorized, "login required")
 			return
 		}
-		next(w, r)
+		ctx := context.WithValue(r.Context(), authSessionContextKey{}, session)
+		next(w, r.WithContext(ctx))
 	}
 }
 
@@ -274,6 +312,24 @@ func (a *consoleAuth) requestIdentityFromHeaders(r *http.Request) (sessionRecord
 	}, true
 }
 
+func findConsoleAccount(role consoleRole, username, password string) (consoleAccount, bool) {
+	for _, account := range consoleAccounts {
+		if account.Role == role && account.Username == username && account.Password == password {
+			return account, true
+		}
+	}
+	return consoleAccount{}, false
+}
+
+func findConsoleAccountByIdentity(role consoleRole, username string) (consoleAccount, bool) {
+	for _, account := range consoleAccounts {
+		if account.Role == role && account.Username == username {
+			return account, true
+		}
+	}
+	return consoleAccount{}, false
+}
+
 func (a *consoleAuth) roleFromGroups(groups []string) consoleRole {
 	for _, group := range groups {
 		if _, ok := a.admins[strings.ToLower(strings.TrimSpace(group))]; ok {
@@ -284,18 +340,77 @@ func (a *consoleAuth) roleFromGroups(groups []string) consoleRole {
 }
 
 func (a *consoleAuth) createSession(role consoleRole, username string) (string, error) {
+	account, ok := findConsoleAccountByIdentity(role, username)
+	if !ok {
+		account = consoleAccount{
+			Role:     role,
+			Username: username,
+		}
+	}
+	return a.createSessionForAccount(account)
+}
+
+func (a *consoleAuth) createSessionForAccount(account consoleAccount) (string, error) {
 	token, err := randomToken()
 	if err != nil {
 		return "", err
 	}
 	a.mu.Lock()
 	a.sessions[token] = sessionRecord{
-		Username: username,
-		Role:     role,
-		Expires:  a.now().Add(sessionTTL),
+		Username:  account.Username,
+		Role:      account.Role,
+		Tenant:    account.Tenant,
+		Namespace: account.Namespace,
+		Expires:   a.now().Add(sessionTTL),
 	}
 	a.mu.Unlock()
 	return token, nil
+}
+
+func requestSession(r *http.Request) (sessionRecord, bool) {
+	if r == nil {
+		return sessionRecord{}, false
+	}
+	session, ok := r.Context().Value(authSessionContextKey{}).(sessionRecord)
+	return session, ok
+}
+
+func namespaceForListRequest(r *http.Request, requested string) (string, error) {
+	requested = strings.TrimSpace(requested)
+	scope := namespaceScopeForRequest(r)
+	if scope == "" {
+		return requested, nil
+	}
+	if requested == "" {
+		return scope, nil
+	}
+	if requested != scope {
+		return "", fmt.Errorf("namespace %q is outside account scope %q", requested, scope)
+	}
+	return requested, nil
+}
+
+func authorizeNamespaceRequest(r *http.Request, requested string) error {
+	requested = strings.TrimSpace(requested)
+	scope := namespaceScopeForRequest(r)
+	if scope == "" {
+		return nil
+	}
+	if requested == "" {
+		return fmt.Errorf("namespace is required for account scope %q", scope)
+	}
+	if requested != scope {
+		return fmt.Errorf("namespace %q is outside account scope %q", requested, scope)
+	}
+	return nil
+}
+
+func namespaceScopeForRequest(r *http.Request) string {
+	session, ok := requestSession(r)
+	if !ok || session.Role == consoleRoleMonitor {
+		return ""
+	}
+	return strings.TrimSpace(session.Namespace)
 }
 
 func (a *consoleAuth) deleteSession(token string) {
@@ -428,12 +543,18 @@ func configuredUserHeaders(config authConfig) []string {
 }
 
 func renderConsoleHTML(role consoleRole) string {
+	return renderConsoleHTMLForSession(role, sessionRecord{Role: role})
+}
+
+func renderConsoleHTMLForSession(role consoleRole, session sessionRecord) string {
 	page, ok := consoleRolePages[role]
 	if !ok {
 		page = consoleRolePages[consoleRoleUser]
 	}
 	replacer := strings.NewReplacer(
 		"__PAGE_ROLE__", string(role),
+		"__ACCOUNT_TENANT__", html.EscapeString(session.Tenant),
+		"__ACCOUNT_NAMESPACE__", html.EscapeString(session.Namespace),
 		"__PAGE_LABEL__", page.Label,
 		"__PAGE_TITLE__", page.Title,
 		"__PAGE_LEDE__", page.Lede,
@@ -458,11 +579,29 @@ func renderLoginHTML(role consoleRole, message, querySuffix string) string {
 		"__USER_SELECTED__", selectedAttr(role == consoleRoleUser),
 		"__MONITOR_SELECTED__", selectedAttr(role == consoleRoleMonitor),
 		"__MONITOR_ROLE_LABEL__", html.EscapeString(monitorRoleLabel),
-		"__DEFAULT_ACCOUNT_HINT__", html.EscapeString(fmt.Sprintf("使用方：%s / %s；%s：%s / %s", consoleRolePages[consoleRoleUser].Username, consoleRolePages[consoleRoleUser].Password, monitorRoleLabel, consoleRolePages[consoleRoleMonitor].Username, consoleRolePages[consoleRoleMonitor].Password)),
+		"__DEFAULT_ACCOUNT_HINT__", html.EscapeString(defaultAccountHint(monitorRoleLabel)),
 		"__LOGIN_TITLE__", "智算纳管登录",
 		"__LOGIN_ACTION__", html.EscapeString(action),
 	)
 	return replacer.Replace(loginHTML)
+}
+
+func defaultAccountHint(monitorRoleLabel string) string {
+	user := consoleAccounts[0]
+	scoped := consoleAccounts[1]
+	monitor := consoleAccounts[2]
+	return fmt.Sprintf(
+		"使用方：%s / %s（Namespace：%s）；隔离测试使用方：%s / %s（Namespace：%s）；%s：%s / %s",
+		user.Username,
+		user.Password,
+		user.Namespace,
+		scoped.Username,
+		scoped.Password,
+		scoped.Namespace,
+		monitorRoleLabel,
+		monitor.Username,
+		monitor.Password,
+	)
 }
 
 func demoQuerySuffix(r *http.Request) string {

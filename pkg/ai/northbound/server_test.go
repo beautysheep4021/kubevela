@@ -64,6 +64,7 @@ func TestServerServesLoginPage(t *testing.T) {
 		"使用方",
 		"K8s 管理员",
 		"admin / shiyong",
+		"tenant-b / tenant-b-123456",
 		"admin / jiankong",
 	} {
 		if !strings.Contains(body, expected) {
@@ -122,6 +123,60 @@ func TestServerLoginFlowRoutesByRole(t *testing.T) {
 				t.Fatalf("location = %q, want %q", location, tc.wantPath)
 			}
 		})
+	}
+}
+
+func TestServerRendersScopedConsoleAccountContext(t *testing.T) {
+	server := NewServer()
+	cookie := loginForRole(t, server, "user", "tenant-b", "tenant-b-123456")
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/user", nil)
+	request.AddCookie(cookie)
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		`data-account-tenant="tenant-b"`,
+		`data-account-namespace="ai-tenant-b"`,
+		"var accountNamespace = (document.body.getAttribute(\"data-account-namespace\") || \"\").trim();",
+		"function applyAccountScopeDefaults()",
+		"if (!accountNamespace)",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("scoped console page missing %q", expected)
+		}
+	}
+}
+
+func TestConsoleDoesNotFallbackToDemoDataForScopedAccounts(t *testing.T) {
+	for _, expected := range []string{
+		"if (demoMode && demo !== null)",
+		"if (demo.__demoError)",
+		"function demoNamespaceError(",
+		"requestedNamespace || accountNamespace",
+	} {
+		if !strings.Contains(consoleHTML, expected) {
+			t.Fatalf("console demo isolation guard missing %q", expected)
+		}
+	}
+	if strings.Contains(consoleHTML, "if (demo !== null) {\n          return demoClone(demo);") {
+		t.Fatal("console must not fall back to demo data after a live API error")
+	}
+}
+
+func TestConsoleDemoListValidationDoesNotRejectValidNamespace(t *testing.T) {
+	const expected = `      if (pathNamespace) {
+        var pathNamespaceError = demoNamespaceError(pathNamespace);
+        if (pathNamespaceError) {
+          return demoError(pathNamespaceError);
+        }
+      }`
+	if !strings.Contains(consoleHTML, expected) {
+		t.Fatalf("console demo path namespace validation must ignore empty list path namespace")
 	}
 }
 
@@ -369,9 +424,18 @@ func (h authenticatedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 func authenticatedServer(t *testing.T, handler http.Handler) http.Handler {
 	t.Helper()
+	return authenticatedServerAsRole(t, handler, "monitor", "admin", "jiankong")
+}
+
+func authenticatedServerAs(t *testing.T, handler http.Handler, username, password string) http.Handler {
+	return authenticatedServerAsRole(t, handler, "user", username, password)
+}
+
+func authenticatedServerAsRole(t *testing.T, handler http.Handler, role, username, password string) http.Handler {
+	t.Helper()
 	return authenticatedHandler{
 		Handler: handler,
-		cookie:  loginForRole(t, handler, "user", "admin", "shiyong"),
+		cookie:  loginForRole(t, handler, role, username, password),
 	}
 }
 
@@ -407,6 +471,111 @@ func TestServerListsApplications(t *testing.T) {
 	}
 	if len(payload.Items) != 1 || payload.Items[0].Name != "ai-service-northbound-demo" || payload.Items[0].WorkloadTypes[0] != "service" {
 		t.Fatalf("unexpected application list: %#v", payload)
+	}
+}
+
+func TestServerScopesTenantBApplicationListToItsNamespace(t *testing.T) {
+	reader := &recordingApplicationReader{}
+	server := authenticatedServerAs(t, NewServerWithOptions(Options{Reader: reader}), "tenant-b", "tenant-b-123456")
+
+	for _, tc := range []struct {
+		name          string
+		url           string
+		wantStatus    int
+		wantNamespace string
+	}{
+		{
+			name:          "defaults to account namespace",
+			url:           "/api/v1/ai/applications",
+			wantStatus:    http.StatusOK,
+			wantNamespace: "ai-tenant-b",
+		},
+		{
+			name:       "rejects another namespace",
+			url:        "/api/v1/ai/applications?namespace=ai-tenant-a",
+			wantStatus: http.StatusForbidden,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reader.listNamespace = ""
+			recorder := httptest.NewRecorder()
+			server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, tc.url, nil))
+
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, tc.wantStatus, recorder.Body.String())
+			}
+			if reader.listNamespace != tc.wantNamespace {
+				t.Fatalf("reader namespace = %q, want %q", reader.listNamespace, tc.wantNamespace)
+			}
+		})
+	}
+}
+
+func TestServerScopesPrimaryUserApplicationListToItsNamespace(t *testing.T) {
+	reader := &recordingApplicationReader{}
+	server := authenticatedServerAs(t, NewServerWithOptions(Options{Reader: reader}), "admin", "shiyong")
+
+	for _, tc := range []struct {
+		name          string
+		url           string
+		wantStatus    int
+		wantNamespace string
+	}{
+		{
+			name:          "defaults to account namespace",
+			url:           "/api/v1/ai/applications",
+			wantStatus:    http.StatusOK,
+			wantNamespace: "ai-tenant-a",
+		},
+		{
+			name:       "rejects another namespace",
+			url:        "/api/v1/ai/applications?namespace=ai-tenant-b",
+			wantStatus: http.StatusForbidden,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reader.listNamespace = ""
+			recorder := httptest.NewRecorder()
+			server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, tc.url, nil))
+
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, tc.wantStatus, recorder.Body.String())
+			}
+			if tc.wantNamespace != "" && reader.listNamespace != tc.wantNamespace {
+				t.Fatalf("namespace = %q, want %q", reader.listNamespace, tc.wantNamespace)
+			}
+		})
+	}
+}
+
+func TestConsoleIncludesIsolatedDemoTaskPairs(t *testing.T) {
+	for _, expected := range []string{
+		`namespace: "ai-tenant-a"`,
+		`namespace: "ai-tenant-b"`,
+		`name: "tenant-a-training-job"`,
+		`name: "tenant-a-inference-service"`,
+		`name: "tenant-b-evaluation-job"`,
+		`name: "tenant-b-chat-service"`,
+	} {
+		if !strings.Contains(consoleHTML, expected) {
+			t.Fatalf("console demo data missing %q", expected)
+		}
+	}
+}
+
+func TestServerRejectsTenantBDeploymentOutsideItsNamespace(t *testing.T) {
+	applier := &recordingApplicationApplier{}
+	server := authenticatedServerAs(t, NewServerWithOptions(Options{Applier: applier}), "tenant-b", "tenant-b-123456")
+	content := strings.Replace(validAIServiceYAML(), "namespace: ai-demo", "namespace: ai-platform", 1)
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/applications", strings.NewReader(content)))
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusForbidden, recorder.Body.String())
+	}
+	if applier.called {
+		t.Fatal("applier should not be called for a cross-tenant deployment")
 	}
 }
 

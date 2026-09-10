@@ -3,6 +3,7 @@ package northbound
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -106,5 +107,87 @@ func TestConsoleAuthPrefersSessionCookieOverRemoteHeaders(t *testing.T) {
 	}
 	if session.Role != consoleRoleUser {
 		t.Fatalf("role = %q, want user", session.Role)
+	}
+}
+
+func TestConsoleAuthAllowsTenantBScopedAccount(t *testing.T) {
+	auth := newConsoleAuth()
+	form := url.Values{}
+	form.Set("role", string(consoleRoleUser))
+	form.Set("username", "tenant-b")
+	form.Set("password", "tenant-b-123456")
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	auth.handleLogin(recorder, request)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusFound)
+	}
+
+	var cookie *http.Cookie
+	for _, candidate := range recorder.Result().Cookies() {
+		if candidate.Name == sessionCookieName {
+			cookie = candidate
+			break
+		}
+	}
+	if cookie == nil {
+		t.Fatal("login response missing session cookie")
+	}
+
+	sessionRequest := httptest.NewRequest(http.MethodGet, "/user", nil)
+	sessionRequest.AddCookie(cookie)
+	session, ok := auth.authenticatedSession(sessionRequest)
+	if !ok {
+		t.Fatal("expected tenant-b account to authenticate")
+	}
+	if session.Username != "tenant-b" || session.Role != consoleRoleUser {
+		t.Fatalf("unexpected session identity: %#v", session)
+	}
+	if session.Tenant != "tenant-b" || session.Namespace != "ai-tenant-b" {
+		t.Fatalf("unexpected tenant scope: %#v", session)
+	}
+}
+
+func TestConsoleAuthScopesPrimaryUserAccount(t *testing.T) {
+	auth := newConsoleAuth()
+	form := url.Values{}
+	form.Set("role", string(consoleRoleUser))
+	form.Set("username", "admin")
+	form.Set("password", "shiyong")
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	auth.handleLogin(recorder, request)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusFound)
+	}
+
+	var cookie *http.Cookie
+	for _, candidate := range recorder.Result().Cookies() {
+		if candidate.Name == sessionCookieName {
+			cookie = candidate
+			break
+		}
+	}
+	if cookie == nil {
+		t.Fatal("login response missing session cookie")
+	}
+
+	sessionRequest := httptest.NewRequest(http.MethodGet, "/user", nil)
+	sessionRequest.AddCookie(cookie)
+	session, ok := auth.authenticatedSession(sessionRequest)
+	if !ok {
+		t.Fatal("expected primary user account to authenticate")
+	}
+	if session.Username != "admin" || session.Role != consoleRoleUser {
+		t.Fatalf("unexpected session identity: %#v", session)
+	}
+	if session.Tenant != "tenant-a" || session.Namespace != "ai-tenant-a" {
+		t.Fatalf("unexpected tenant scope: %#v", session)
 	}
 }

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${BASE_URL:-http://127.0.0.1:18088}"
+BASE_URL="${BASE_URL:-http://127.0.0.1:18089}"
 NAMESPACE="${NAMESPACE:-sock-shop}"
 JOB_NAME="${JOB_NAME:-delivery-e2e-$(date +%m%d%H%M%S)}"
 SERVICE_NAME="${SERVICE_NAME:-${JOB_NAME}-service}"
 TIMEOUT="${TIMEOUT:-120s}"
+LOGIN_ROLE="${AI_NORTHBOUND_ROLE:-user}"
+LOGIN_USERNAME="${AI_NORTHBOUND_USERNAME:-admin}"
+LOGIN_PASSWORD="${AI_NORTHBOUND_PASSWORD:-shiyong}"
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -35,7 +38,7 @@ wait_for_named_resource() {
 
 wait_for_probe() {
   for _ in $(seq 1 30); do
-    curl -fsS -X POST "${BASE_URL}/api/v1/ai/applications/${NAMESPACE}/${SERVICE_NAME}/probe" \
+    api_curl -X POST "${BASE_URL}/api/v1/ai/applications/${NAMESPACE}/${SERVICE_NAME}/probe" \
       -H "Content-Type: application/json" \
       -d '{"path":"/healthz","timeoutSeconds":5}' | tee "$tmpdir/probe.json"
     if grep -q '"healthy":true' "$tmpdir/probe.json"; then
@@ -49,6 +52,31 @@ wait_for_probe() {
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+cookie_file="$tmpdir/cookies.txt"
+
+login() {
+  local status
+  status="$(curl -sS -o "$tmpdir/login.response" -w '%{http_code}' \
+    -c "$cookie_file" \
+    -X POST "${BASE_URL}/login" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data-urlencode "role=${LOGIN_ROLE}" \
+    --data-urlencode "username=${LOGIN_USERNAME}" \
+    --data-urlencode "password=${LOGIN_PASSWORD}")"
+  if [ "$status" != "302" ]; then
+    echo "login failed for ${LOGIN_ROLE}/${LOGIN_USERNAME}: HTTP ${status}" >&2
+    sed -n '1,80p' "$tmpdir/login.response" >&2
+    return 1
+  fi
+  if [ ! -s "$cookie_file" ]; then
+    echo "login succeeded without a session cookie" >&2
+    return 1
+  fi
+}
+
+api_curl() {
+  curl -fsS -b "$cookie_file" "$@"
+}
 
 job_yaml="$tmpdir/job.yaml"
 cat >"$job_yaml" <<EOF
@@ -93,8 +121,11 @@ EOF
 echo "== healthz =="
 curl -fsS "${BASE_URL}/healthz"
 
+echo "== login ${LOGIN_ROLE}/${LOGIN_USERNAME} =="
+login
+
 echo "== submit AIJob ${NAMESPACE}/${JOB_NAME} =="
-curl -fsS -X POST "${BASE_URL}/api/v1/ai/applications" \
+api_curl -X POST "${BASE_URL}/api/v1/ai/applications" \
   -H "Content-Type: application/yaml" \
   --data-binary @"$job_yaml" >"$tmpdir/deploy.json"
 
@@ -108,11 +139,11 @@ kubectl logs -n "$NAMESPACE" "$pod" | tee "$tmpdir/job.log"
 grep -q "AI_RESULT_JSON=" "$tmpdir/job.log"
 
 echo "== parse delivery result =="
-curl -fsS "${BASE_URL}/api/v1/ai/deliveries/${NAMESPACE}/${JOB_NAME}/result" | tee "$tmpdir/result.json"
+api_curl "${BASE_URL}/api/v1/ai/deliveries/${NAMESPACE}/${JOB_NAME}/result" | tee "$tmpdir/result.json"
 grep -q "inline://models/${JOB_NAME}/v1" "$tmpdir/result.json"
 
 echo "== publish AIService ${SERVICE_NAME} =="
-curl -fsS -X POST "${BASE_URL}/api/v1/ai/deliveries/${NAMESPACE}/${JOB_NAME}/publish-service" \
+api_curl -X POST "${BASE_URL}/api/v1/ai/deliveries/${NAMESPACE}/${JOB_NAME}/publish-service" \
   -H "Content-Type: application/json" \
   -d "{\"serviceName\":\"${SERVICE_NAME}\",\"image\":\"python:3.11-slim\",\"port\":8080,\"servicePort\":80}" | tee "$tmpdir/publish.json"
 
@@ -124,7 +155,7 @@ echo "== probe AIService =="
 wait_for_probe
 
 echo "== verify artifact registry =="
-curl -fsS "${BASE_URL}/api/v1/ai/artifacts?namespace=${NAMESPACE}" | tee "$tmpdir/artifacts.json"
+api_curl "${BASE_URL}/api/v1/ai/artifacts?namespace=${NAMESPACE}" | tee "$tmpdir/artifacts.json"
 grep -q "inline://models/${JOB_NAME}/v1" "$tmpdir/artifacts.json"
 
 echo "AI northbound delivery E2E passed: ${NAMESPACE}/${JOB_NAME} -> ${SERVICE_NAME}"

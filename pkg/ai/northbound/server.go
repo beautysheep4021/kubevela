@@ -223,7 +223,12 @@ func listApplications(reader ApplicationReader, w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusServiceUnavailable, "application reader is not configured")
 		return
 	}
-	items, err := reader.ListApplications(r.Context(), r.URL.Query().Get("namespace"))
+	namespace, err := namespaceForListRequest(r, r.URL.Query().Get("namespace"))
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	items, err := reader.ListApplications(r.Context(), namespace)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -236,6 +241,10 @@ func applicationDetail(options Options) http.HandlerFunc {
 		namespace, name, action, ok := parseApplicationDetailPath(r.URL.Path)
 		if !ok {
 			http.NotFound(w, r)
+			return
+		}
+		if err := authorizeNamespaceRequest(r, namespace); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
 			return
 		}
 		if r.Method == http.MethodDelete && action == "" {
@@ -388,7 +397,12 @@ func audits(store AuditStore) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "audit store is not configured")
 			return
 		}
-		items, err := store.ListAudits(r.Context(), r.URL.Query().Get("namespace"))
+		namespace, err := namespaceForListRequest(r, r.URL.Query().Get("namespace"))
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		items, err := store.ListAudits(r.Context(), namespace)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
@@ -407,7 +421,12 @@ func artifacts(store ArtifactStore) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "artifact store is not configured")
 			return
 		}
-		items, err := store.ListArtifacts(r.Context(), r.URL.Query().Get("namespace"))
+		namespace, err := namespaceForListRequest(r, r.URL.Query().Get("namespace"))
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		items, err := store.ListArtifacts(r.Context(), namespace)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
@@ -424,7 +443,12 @@ func models(store ArtifactStore) http.HandlerFunc {
 		}
 		switch r.Method {
 		case http.MethodGet:
-			items, err := store.ListArtifacts(r.Context(), r.URL.Query().Get("namespace"))
+			namespace, err := namespaceForListRequest(r, r.URL.Query().Get("namespace"))
+			if err != nil {
+				writeError(w, http.StatusForbidden, err.Error())
+				return
+			}
+			items, err := store.ListArtifacts(r.Context(), namespace)
 			if err != nil {
 				writeError(w, http.StatusBadGateway, err.Error())
 				return
@@ -438,6 +462,10 @@ func models(store ArtifactStore) http.HandlerFunc {
 			}
 			if asset.Namespace == "" {
 				writeError(w, http.StatusBadRequest, "namespace is required")
+				return
+			}
+			if err := authorizeNamespaceRequest(r, asset.Namespace); err != nil {
+				writeError(w, http.StatusForbidden, err.Error())
 				return
 			}
 			if asset.ModelURI == "" {
@@ -484,7 +512,12 @@ func datasets(store DatasetStore) http.HandlerFunc {
 		}
 		switch r.Method {
 		case http.MethodGet:
-			items, err := store.ListDatasets(r.Context(), r.URL.Query().Get("namespace"))
+			namespace, err := namespaceForListRequest(r, r.URL.Query().Get("namespace"))
+			if err != nil {
+				writeError(w, http.StatusForbidden, err.Error())
+				return
+			}
+			items, err := store.ListDatasets(r.Context(), namespace)
 			if err != nil {
 				writeError(w, http.StatusBadGateway, err.Error())
 				return
@@ -498,6 +531,10 @@ func datasets(store DatasetStore) http.HandlerFunc {
 			}
 			if dataset.Namespace == "" {
 				writeError(w, http.StatusBadRequest, "namespace is required")
+				return
+			}
+			if err := authorizeNamespaceRequest(r, dataset.Namespace); err != nil {
+				writeError(w, http.StatusForbidden, err.Error())
 				return
 			}
 			if dataset.DatasetURI == "" {
@@ -593,6 +630,10 @@ func modelDetail(options Options) http.HandlerFunc {
 		namespace, name, action, ok := parseModelDetailPath(r.URL.Path)
 		if !ok {
 			http.NotFound(w, r)
+			return
+		}
+		if err := authorizeNamespaceRequest(r, namespace); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
 			return
 		}
 		if r.Method != http.MethodPost {
@@ -786,6 +827,10 @@ func deliveries(options Options) http.HandlerFunc {
 		namespace, jobName, action, ok := parseDeliveryPath(r.URL.Path)
 		if !ok {
 			http.NotFound(w, r)
+			return
+		}
+		if err := authorizeNamespaceRequest(r, namespace); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
 			return
 		}
 		switch {
@@ -1088,6 +1133,18 @@ func deploy(applier domainapply.ApplicationApplier) http.HandlerFunc {
 		normalized, err := domain.NormalizeYAML(content)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := authorizeNamespaceRequest(r, normalized.Namespace); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if err := authorizeNamespaceRequest(r, normalized.GovernanceIntent.Placement.Namespace); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if err := authorizeNamespaceRequest(r, normalized.GovernanceIntent.Isolation.TenantNamespace); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
 			return
 		}
 		appYAML, err := domain.TranslateYAML(content)
