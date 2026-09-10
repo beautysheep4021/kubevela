@@ -3,6 +3,7 @@ package northbound
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/ai/domain"
 	domainapply "github.com/oam-dev/kubevela/pkg/ai/domain/apply"
 	"github.com/oam-dev/kubevela/pkg/ai/observe"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 const maxRequestBodyBytes = 1 << 20
@@ -142,6 +144,8 @@ func NewServerWithOptions(options Options) http.Handler {
 	mux.HandleFunc("/user", auth.handleConsolePage(consoleRoleUser))
 	mux.HandleFunc("/monitor", auth.handleConsolePage(consoleRoleMonitor))
 	mux.HandleFunc("/healthz", healthz)
+	mux.HandleFunc("/console/", auth.requireSession(serveConsoleAsset))
+	mux.HandleFunc("/api/v1/ai/session", auth.requireSession(currentConsoleSession))
 	mux.HandleFunc("/api/v1/ai/validate", auth.requireSession(validate))
 	mux.HandleFunc("/api/v1/ai/normalize", auth.requireSession(normalize))
 	mux.HandleFunc("/api/v1/ai/applications", auth.requireSession(applications(options)))
@@ -738,6 +742,10 @@ func syncModelEvaluation(options Options, w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	if err := validateEvaluationModelAssociation(asset.ModelURI, result.ModelURI); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	asset.Metrics = result.Metrics
 	asset.Summary = result.Summary
 	asset.Status = "evaluated"
@@ -960,6 +968,24 @@ func publishDeliveryService(options Options, w http.ResponseWriter, r *http.Requ
 	}
 	if request.ServicePort == 0 {
 		request.ServicePort = 80
+	}
+	// This preflight is not atomic with apply; a concurrent creator can still race it.
+	_, lookupErr := options.Reader.SummarizeApplication(r.Context(), namespace, request.ServiceName)
+	if lookupErr == nil {
+		writeError(w, http.StatusConflict, fmt.Sprintf("application %s/%s already exists", namespace, request.ServiceName))
+		return
+	}
+	// Summary also reads related resources. Only a missing target Application
+	// permits publication, not a NotFound error from those additional reads.
+	var status apierrors.APIStatus
+	missingTarget := false
+	if apierrors.IsNotFound(lookupErr) && errors.As(lookupErr, &status) {
+		details := status.Status().Details
+		missingTarget = details != nil && details.Group == "core.oam.dev" && details.Kind == "applications" && details.Name == request.ServiceName
+	}
+	if !missingTarget {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("check publish target: %v", lookupErr))
+		return
 	}
 	domainYAML := deliveryServiceYAML(namespace, jobName, request, result)
 	appYAML, err := domain.TranslateYAML([]byte(domainYAML))

@@ -142,9 +142,8 @@ func TestServerRendersScopedConsoleAccountContext(t *testing.T) {
 	for _, expected := range []string{
 		`data-account-tenant="tenant-b"`,
 		`data-account-namespace="ai-tenant-b"`,
-		"var accountNamespace = (document.body.getAttribute(\"data-account-namespace\") || \"\").trim();",
-		"function applyAccountScopeDefaults()",
-		"if (!accountNamespace)",
+		`data-account-username="tenant-b"`,
+		`/console/app.js`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("scoped console page missing %q", expected)
@@ -820,7 +819,7 @@ func TestServerPublishesDeliveryResultAsAIService(t *testing.T) {
 	}
 	applier := &recordingApplicationApplier{}
 	audits := &recordingAuditStore{}
-	server := authenticatedServer(t, NewServerWithOptions(Options{Reader: reader, Applier: applier, Audits: audits}))
+	server := authenticatedServer(t, NewServerWithOptions(Options{Reader: &deliveryPublishReader{recordingApplicationReader: reader}, Applier: applier, Audits: audits}))
 	body := strings.NewReader(`{"serviceName":"train-demo-service","image":"python:3.11-slim","port":8080,"servicePort":80}`)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/deliveries/sock-shop/train-demo/publish-service", body)
@@ -862,7 +861,7 @@ func TestServerPublishesDeliveryResultAndRecordsArtifact(t *testing.T) {
 		},
 	}
 	artifacts := &recordingArtifactStore{}
-	server := authenticatedServer(t, NewServerWithOptions(Options{Reader: reader, Applier: &recordingApplicationApplier{}, Artifacts: artifacts}))
+	server := authenticatedServer(t, NewServerWithOptions(Options{Reader: &deliveryPublishReader{recordingApplicationReader: reader}, Applier: &recordingApplicationApplier{}, Artifacts: artifacts}))
 	body := strings.NewReader(`{"serviceName":"train-demo-service"}`)
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/ai/deliveries/sock-shop/train-demo/publish-service", body))

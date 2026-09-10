@@ -1,0 +1,6 @@
+{
+  "name": "ai-console-checks",
+  "private": true,
+  "scripts": { "test": "node --test console.test.cjs" },
+  "devDependencies": { "playwright": "1.58.2" }
+}

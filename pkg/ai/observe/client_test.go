@@ -2,11 +2,15 @@ package observe
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -115,10 +119,15 @@ func TestApplicationListItemIncludesResourceSummary(t *testing.T) {
 		},
 	}
 
+	_ = unstructured.SetNestedField(app.Object, "2026-09-10T03:00:00Z", "metadata", "creationTimestamp")
 	item, ok := applicationListItem(&app)
 
 	if !ok {
 		t.Fatalf("expected application list item")
+	}
+	encoded, err := json.Marshal(item)
+	if err != nil || !strings.Contains(string(encoded), `"createdAt":"2026-09-10T03:00:00Z"`) {
+		t.Fatalf("list must expose the actual creation time: %s (%v)", encoded, err)
 	}
 	if item.ResourceSummary.CPUMilli != 9500 {
 		t.Fatalf("cpu milli = %d, want 9500", item.ResourceSummary.CPUMilli)
@@ -208,4 +217,97 @@ func logPodObject(name, container string, createdAt time.Time) unstructured.Unst
 			},
 		},
 	}
+}
+
+func TestApplicationListJobLifecycle(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		modify  func(*unstructured.Unstructured)
+		phase   string
+		healthy bool
+	}{
+		{name: "completed", phase: "succeeded", healthy: true},
+		{name: "unhealthy is not failed", modify: func(app *unstructured.Unstructured) {
+			_ = unstructured.SetNestedSlice(app.Object, []interface{}{map[string]interface{}{"name": "worker", "healthy": false}}, "status", "services")
+		}, phase: "running"},
+		{name: "missing status", modify: func(app *unstructured.Unstructured) { unstructured.RemoveNestedField(app.Object, "status", "services") }, phase: "running"},
+		{name: "unrelated healthy status", modify: func(app *unstructured.Unstructured) {
+			_ = unstructured.SetNestedSlice(app.Object, []interface{}{map[string]interface{}{"name": "other", "healthy": true}}, "status", "services")
+		}, phase: "running"},
+		{name: "stale generation", modify: func(app *unstructured.Unstructured) { app.SetGeneration(2) }, phase: "running"},
+		{name: "failed application", modify: func(app *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(app.Object, "failed", "status", "status")
+		}, phase: "failed", healthy: true},
+		{name: "workload completed with unhealthy trait", modify: func(app *unstructured.Unstructured) {
+			_ = unstructured.SetNestedSlice(app.Object, []interface{}{map[string]interface{}{"name": "worker", "healthy": false, "workloadHealthy": true}}, "status", "services")
+		}, phase: "succeeded"},
+		{name: "partial multi job", modify: func(app *unstructured.Unstructured) {
+			components, _, _ := unstructured.NestedSlice(app.Object, "spec", "components")
+			_ = unstructured.SetNestedSlice(app.Object, append(components, map[string]interface{}{"name": "second", "type": "ai-job"}), "spec", "components")
+		}, phase: "running"},
+		{name: "mixed job and service", modify: func(app *unstructured.Unstructured) {
+			components, _, _ := unstructured.NestedSlice(app.Object, "spec", "components")
+			_ = unstructured.SetNestedSlice(app.Object, append(components, map[string]interface{}{"name": "service", "type": "ai-service"}), "spec", "components")
+		}, phase: "running"},
+		{name: "service health is readiness", modify: func(app *unstructured.Unstructured) {
+			_ = unstructured.SetNestedSlice(app.Object, []interface{}{map[string]interface{}{"name": "worker", "type": "ai-service"}}, "spec", "components")
+		}, phase: "running", healthy: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := listJobFixture()
+			if tt.modify != nil {
+				tt.modify(app)
+			}
+			item, ok := applicationListItem(app)
+			if !ok || item.Phase != tt.phase || item.Healthy != tt.healthy {
+				t.Fatalf("list status = %#v, want phase %q healthy %v", item, tt.phase, tt.healthy)
+			}
+		})
+	}
+}
+
+func TestListApplicationsExposesPurposeWithoutAdditionalReads(t *testing.T) {
+	app := listJobFixture()
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{applicationGVR: "ApplicationList"}, app)
+	items, err := NewClient(client).ListApplications(context.Background(), "tenant-a")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("list = %#v, %v", items, err)
+	}
+	if items[0].Phase != "succeeded" || items[0].AIMetadata["ai.oam.dev/job-kind"] != "evaluation" {
+		t.Fatalf("missing lifecycle or purpose: %#v", items[0])
+	}
+	if actions := client.Actions(); len(actions) != 1 || actions[0].GetVerb() != "list" || actions[0].GetResource() != applicationGVR {
+		t.Fatalf("unexpected Kubernetes reads: %#v", actions)
+	}
+}
+
+func TestApplicationListPurposeAnnotations(t *testing.T) {
+	app := listJobFixture()
+	_ = unstructured.SetNestedSlice(app.Object, []interface{}{map[string]interface{}{
+		"name": "worker", "type": "ai-service", "properties": map[string]interface{}{
+			"annotations": map[string]interface{}{"ai.oam.dev/purpose": "agent"},
+		},
+	}}, "spec", "components")
+	item, _ := applicationListItem(app)
+	if item.AIMetadata["ai.oam.dev/purpose"] != "agent" {
+		t.Fatalf("missing annotation purpose: %#v", item)
+	}
+	app.SetAnnotations(map[string]string{"ai.oam.dev/purpose": "service"})
+	item, _ = applicationListItem(app)
+	if item.AIMetadata["ai.oam.dev/purpose"] != "service" {
+		t.Fatalf("application annotation must take precedence: %#v", item)
+	}
+}
+
+func listJobFixture() *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "core.oam.dev/v1beta1", "kind": "Application",
+		"metadata": map[string]interface{}{"name": "eval", "namespace": "tenant-a", "generation": int64(1)},
+		"spec": map[string]interface{}{"components": []interface{}{map[string]interface{}{
+			"name": "worker", "type": "ai-job", "properties": map[string]interface{}{"jobKind": "evaluation", "completions": int64(3)},
+		}}},
+		"status": map[string]interface{}{"status": "running", "observedGeneration": int64(1),
+			"services": []interface{}{map[string]interface{}{"name": "worker", "healthy": true}},
+		},
+	}}
 }

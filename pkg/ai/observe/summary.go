@@ -40,6 +40,7 @@ type WorkloadSummary struct {
 	ReadyReplicas           int64  `json:"readyReplicas,omitempty"`
 	Active                  int64  `json:"active,omitempty"`
 	Succeeded               int64  `json:"succeeded,omitempty"`
+	Completed               bool   `json:"completed"`
 	Failed                  int64  `json:"failed,omitempty"`
 	TTLSecondsAfterFinished int64  `json:"ttlSecondsAfterFinished,omitempty"`
 }
@@ -322,6 +323,14 @@ func summarizeWorkload(obj *unstructured.Unstructured) WorkloadSummary {
 		summary.Succeeded = nestedInt64(obj.Object, "status", "succeeded")
 		summary.Failed = nestedInt64(obj.Object, "status", "failed")
 		summary.TTLSecondsAfterFinished = nestedInt64(obj.Object, "spec", "ttlSecondsAfterFinished")
+		conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+		for _, raw := range conditions {
+			condition, ok := raw.(map[string]interface{})
+			if ok && stringFromMap(condition, "type") == "Complete" && stringFromMap(condition, "status") == "True" {
+				summary.Completed = true
+				break
+			}
+		}
 	}
 	return summary
 }

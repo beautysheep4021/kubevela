@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>使用方工作台 · 智算纳管</title>
+  <link rel="stylesheet" href="/console/styles.css">
+  <script defer src="/console/lucide.js"></script>
+  <script defer src="/console/state.js"></script>
+  <script defer src="/console/api.js"></script>
+  <script defer src="/console/create.js"></script>
+  <script defer src="/console/app.js"></script>
+</head>
+<body data-role="user" data-account-tenant="__ACCOUNT_TENANT__" data-account-namespace="__ACCOUNT_NAMESPACE__" data-account-username="__ACCOUNT_USERNAME__">
+  <div class="shell">
+    <aside class="sidebar" aria-label="主导航">
+      <a class="brand" href="#/overview"><img src="/console/brand.svg" alt="" width="30" height="30"><span>智算纳管<small>AI WORKSPACE</small></span></a>
+      <nav>
+        <a class="nav-link" href="#/overview" data-nav="overview"><i data-lucide="layout-dashboard"></i>工作台</a>
+        <a class="nav-link" href="#/jobs" data-nav="jobs"><i data-lucide="list-checks"></i>任务</a>
+        <a class="nav-link" href="#/services" data-nav="services"><i data-lucide="radio-tower"></i>在线服务</a>
+        <a class="nav-link" href="#/models" data-nav="models"><i data-lucide="box"></i>模型</a>
+        <a class="nav-link" href="#/datasets" data-nav="datasets"><i data-lucide="database"></i>数据集</a>
+      </nav>
+      <div class="sidebar-footer"><span class="subtle">使用方工作空间</span><span>__ACCOUNT_TENANT__</span></div>
+    </aside>
+    <div class="main">
+      <header class="topbar">
+        <button id="nav-toggle" class="icon-button" title="展开导航" aria-label="展开导航" aria-expanded="false"><i data-lucide="menu"></i></button>
+        <div class="scope"><i data-lucide="layers"></i><span>__ACCOUNT_TENANT__<small>__ACCOUNT_NAMESPACE__</small></span></div>
+        <span id="environment" class="environment"></span>
+        <span class="account">__ACCOUNT_USERNAME__</span>
+        <form action="/logout" method="post" id="logout-form"><button class="icon-button" title="退出登录" aria-label="退出登录"><i data-lucide="log-out"></i></button></form>
+      </header>
+      <main id="page" tabindex="-1" aria-label="工作空间内容"></main>
+    </div>
+  </div>
+  <dialog id="modal" aria-labelledby="modal-title"></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <noscript>请启用 JavaScript 后访问工作台。</noscript>
+</body>
+</html>

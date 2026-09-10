@@ -241,6 +241,7 @@ func (a *consoleAuth) handleConsolePage(role consoleRole) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
 		_, _ = io.WriteString(w, renderConsoleHTMLForSession(role, session))
 	}
 }
@@ -555,11 +556,15 @@ func renderConsoleHTMLForSession(role consoleRole, session sessionRecord) string
 		"__PAGE_ROLE__", string(role),
 		"__ACCOUNT_TENANT__", html.EscapeString(session.Tenant),
 		"__ACCOUNT_NAMESPACE__", html.EscapeString(session.Namespace),
+		"__ACCOUNT_USERNAME__", html.EscapeString(session.Username),
 		"__PAGE_LABEL__", page.Label,
 		"__PAGE_TITLE__", page.Title,
 		"__PAGE_LEDE__", page.Lede,
 		"__PAGE_ROLE_LABEL__", page.RoleLabel,
 	)
+	if role == consoleRoleUser {
+		return replacer.Replace(userConsoleHTML())
+	}
 	return replacer.Replace(consoleHTML)
 }
 

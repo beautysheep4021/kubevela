@@ -37,6 +37,7 @@ type Client struct {
 
 type ApplicationListItem struct {
 	Name            string            `json:"name"`
+	CreatedAt       string            `json:"createdAt,omitempty"`
 	Namespace       string            `json:"namespace,omitempty"`
 	Phase           string            `json:"phase,omitempty"`
 	Healthy         bool              `json:"healthy"`
@@ -640,6 +641,7 @@ func applicationListItem(app *unstructured.Unstructured) (ApplicationListItem, b
 	}
 	item := ApplicationListItem{
 		Name:            app.GetName(),
+		CreatedAt:       nestedString(app.Object, "metadata", "creationTimestamp"),
 		Namespace:       app.GetNamespace(),
 		Phase:           nestedString(app.Object, "status", "status"),
 		Components:      components,
@@ -649,20 +651,81 @@ func applicationListItem(app *unstructured.Unstructured) (ApplicationListItem, b
 	}
 	mergeAIMetadata(item.AIMetadata, app)
 	mergeRuntimeTraitMetadata(item.AIMetadata, app)
+	mergeComponentPurposeMetadata(item.AIMetadata, app)
+	healthy := map[string]bool{}
+	completed := map[string]bool{}
+	for _, component := range components {
+		healthy[component.Name] = true
+		completed[component.Name] = component.Type == "ai-job"
+	}
+	seen := map[string]bool{}
 	services, _, _ := unstructured.NestedSlice(app.Object, "status", "services")
 	for _, service := range services {
 		serviceMap, ok := service.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		if boolFromMap(serviceMap, "healthy") {
-			item.Healthy = true
+		name := stringFromMap(serviceMap, "name")
+		if _, relevant := healthy[name]; !relevant {
+			continue
 		}
+		seen[name] = true
+		healthy[name] = healthy[name] && boolFromMap(serviceMap, "healthy")
+		workloadHealthy, present := serviceMap["workloadHealthy"].(bool)
+		if !present {
+			workloadHealthy = boolFromMap(serviceMap, "healthy")
+		}
+		completed[name] = completed[name] && workloadHealthy
 		if item.Message == "" {
 			item.Message = stringFromMap(serviceMap, "message")
 		}
 	}
+	observedGeneration, _, _ := unstructured.NestedInt64(app.Object, "status", "observedGeneration")
+	current := observedGeneration == app.GetGeneration()
+	item.Healthy = current
+	rawComponents, _, _ := unstructured.NestedSlice(app.Object, "spec", "components")
+	allCompleted := current && len(rawComponents) == len(components)
+	for _, component := range components {
+		item.Healthy = item.Healthy && seen[component.Name] && healthy[component.Name]
+		allCompleted = allCompleted && seen[component.Name] && completed[component.Name]
+	}
+	// ai-job health means succeeded == spec.completions, not merely a running pod.
+	// Preserve other Application phases, including explicit failure and in-progress workflows.
+	if allCompleted && item.Phase == "running" && app.GetDeletionTimestamp() == nil {
+		item.Phase = "succeeded"
+	}
 	return item, true
+}
+
+func mergeComponentPurposeMetadata(target map[string]string, app *unstructured.Unstructured) {
+	values := map[string]string{}
+	conflicts := map[string]bool{}
+	components, _, _ := unstructured.NestedSlice(app.Object, "spec", "components")
+	for _, raw := range components {
+		component, ok := raw.(map[string]interface{})
+		if !ok || listWorkloadType(stringFromMap(component, "type")) == "" {
+			continue
+		}
+		for _, key := range []string{"purpose", "job-kind", "task-type"} {
+			metadataKey := aiMetadataPrefix + key
+			value := nestedString(component, "properties", "annotations", metadataKey)
+			if value == "" && key == "job-kind" && stringFromMap(component, "type") == "ai-job" {
+				value = nestedString(component, "properties", "jobKind")
+			}
+			if value == "" {
+				continue
+			}
+			if previous := values[metadataKey]; previous != "" && previous != value {
+				conflicts[metadataKey] = true
+			}
+			values[metadataKey] = value
+		}
+	}
+	for key, value := range values {
+		if target[key] == "" && !conflicts[key] {
+			target[key] = value
+		}
+	}
 }
 
 func logPodFromUnstructured(pod *unstructured.Unstructured) LogPod {
