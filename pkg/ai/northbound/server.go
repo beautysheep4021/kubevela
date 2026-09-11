@@ -21,14 +21,15 @@ import (
 const maxRequestBodyBytes = 1 << 20
 
 type Options struct {
-	Applier   domainapply.ApplicationApplier
-	Reader    ApplicationReader
-	Manager   ApplicationManager
-	Prober    ApplicationProber
-	Artifacts ArtifactStore
-	Datasets  DatasetStore
-	Audits    AuditStore
-	Auth      *authConfig
+	TenantResources TenantResourceReader
+	Applier         domainapply.ApplicationApplier
+	Reader          ApplicationReader
+	Manager         ApplicationManager
+	Prober          ApplicationProber
+	Artifacts       ArtifactStore
+	Datasets        DatasetStore
+	Audits          AuditStore
+	Auth            *authConfig
 }
 
 type errorResponse struct {
@@ -151,6 +152,7 @@ func NewServerWithOptions(options Options) http.Handler {
 	mux.HandleFunc("/api/v1/ai/applications", auth.requireSession(applications(options)))
 	mux.HandleFunc("/api/v1/ai/applications/", auth.requireSession(applicationDetail(options)))
 	mux.HandleFunc("/api/v1/ai/audits", auth.requireSession(audits(options.Audits)))
+	mux.HandleFunc("/api/v1/ai/tenant-resources", auth.requireSession(tenantResources(options.TenantResources)))
 	mux.HandleFunc("/api/v1/ai/artifacts", auth.requireSession(artifacts(options.Artifacts)))
 	mux.HandleFunc("/api/v1/ai/models", auth.requireSession(models(options.Artifacts)))
 	mux.HandleFunc("/api/v1/ai/models/", auth.requireSession(modelDetail(options)))
@@ -288,7 +290,15 @@ func applicationDetail(options Options) http.HandlerFunc {
 		}
 		summary, err := options.Reader.SummarizeApplication(r.Context(), namespace, name)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, err.Error())
+			statusCode := http.StatusBadGateway
+			var status apierrors.APIStatus
+			if apierrors.IsNotFound(err) && errors.As(err, &status) {
+				details := status.Status().Details
+				if details != nil && details.Group == "core.oam.dev" && details.Kind == "applications" && details.Name == name {
+					statusCode = http.StatusNotFound
+				}
+			}
+			writeError(w, statusCode, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, summary)

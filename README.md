@@ -55,6 +55,22 @@ and share the large growing community [addons](https://kubevela.io/docs/referenc
 
 ## Getting Started
 
+### 智算纳管平台（本功能分支）
+
+`ai-northbound` 将前端、登录和管理 API 打包在同一个 Go 程序中，无需分别启动前端和后端。
+在仓库根目录运行（需要 Go，版本要求见 `go.mod`）：
+
+```bash
+go run ./references/cmd/ai-northbound -addr 127.0.0.1:18095
+```
+
+打开 <http://127.0.0.1:18095/login?demo=local>。测试账号为 `admin / shiyong`（tenant A）和
+`tenant-b / tenant-b-123456`（tenant B）。演示数据保存在页面内存中，刷新重置，不运行真实任务。
+默认测试账号不适用于公网或生产部署。
+
+真实运行需要连接 Kubernetes，并安装 KubeVela 和 AI 组件定义。完整说明见
+**[启动、集群部署与更新指南](references/deploy/ai-northbound/README.md)**。
+
 * [Introduction](https://kubevela.io/docs)
 * [Installation](https://kubevela.io/docs/install)
 * [Deploy Your Application](https://kubevela.io/docs/quick-start)

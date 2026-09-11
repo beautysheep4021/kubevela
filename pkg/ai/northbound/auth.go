@@ -565,6 +565,9 @@ func renderConsoleHTMLForSession(role consoleRole, session sessionRecord) string
 	if role == consoleRoleUser {
 		return replacer.Replace(userConsoleHTML())
 	}
+	if role == consoleRoleMonitor {
+		return replacer.Replace(monitorConsoleHTML())
+	}
 	return replacer.Replace(consoleHTML)
 }
 

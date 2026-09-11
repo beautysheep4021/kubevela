@@ -91,7 +91,9 @@
     }
     async function session(init) {
       var current = await transport(BASE + '/session', {signal: init.signal, cache: 'no-store'});
-      if (!current || !current.namespace || !current.tenant || current.namespace !== namespace || current.tenant !== tenant) {
+      var monitor = options.role === 'monitor';
+      if (!current || (monitor ? current.role !== 'monitor' :
+          (!current.namespace || !current.tenant || current.namespace !== namespace || current.tenant !== tenant))) {
         throw unauthorized('Account scope changed. Please sign in again.');
       }
       if (username !== undefined && current.username !== username) {

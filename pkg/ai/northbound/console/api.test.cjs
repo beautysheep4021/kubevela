@@ -10,6 +10,13 @@ const json = (value, status = 200) => new Response(JSON.stringify(value), {
 });
 const post = body => ({method: 'POST', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}});
 const ownIdentity = {namespace: 'ai-tenant-a', tenant: 'tenant-a', username: 'user-a'};
+test('monitor transport accepts empty scope and invalidates when role changes', async () => {
+  let identity = {role:'monitor',username:'admin',namespace:'',tenant:''};
+  const client = harness(async () => json(identity)).create({role:'monitor',username:'admin'});
+  assert.equal((await client.request(prefix+'/session')).role,'monitor');
+  identity = {role:'user',username:'admin',namespace:'ai-tenant-a',tenant:'tenant-a'};
+  await assert.rejects(client.request(prefix+'/session'),{status:401});
+});
 function harness(fetcher, globals = {}) {
   const sandbox = {URL, Headers, AbortController, setTimeout, clearTimeout, fetch: fetcher, ...globals};
   const file = path.join(__dirname, 'api.js');

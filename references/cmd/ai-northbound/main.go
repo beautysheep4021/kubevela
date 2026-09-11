@@ -73,13 +73,14 @@ func buildServerOptions(parsed args) (northbound.Options, error) {
 	}
 	reader := observe.NewClientWithKube(client, kubeClient)
 	return northbound.Options{
-		Applier:   domainapply.DynamicApplicationApplier{Client: client},
-		Reader:    reader,
-		Manager:   reader,
-		Prober:    reader,
-		Artifacts: reader,
-		Datasets:  reader,
-		Audits:    reader,
+		TenantResources: reader,
+		Applier:         domainapply.DynamicApplicationApplier{Client: client},
+		Reader:          reader,
+		Manager:         reader,
+		Prober:          reader,
+		Artifacts:       reader,
+		Datasets:        reader,
+		Audits:          reader,
 	}, nil
 }
 

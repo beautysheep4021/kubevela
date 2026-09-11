@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>K8s 管理员工作台 · 智算纳管</title>
+    <link rel="stylesheet" href="/console/styles.css" />
+    <link rel="stylesheet" href="/console/monitor.css" />
+    <script defer src="/console/lucide.js"></script>
+    <script defer src="/console/state.js"></script>
+    <script defer src="/console/monitor-state.js"></script>
+    <script defer src="/console/api.js"></script>
+    <script defer src="/console/monitor-api.js"></script>
+    <script defer src="/console/monitor.js"></script>
+  </head>
+  <body data-role="monitor" data-account-username="__ACCOUNT_USERNAME__">
+    <div class="shell">
+      <aside class="sidebar" aria-label="主导航">
+        <a class="brand" href="#/overview"
+          ><img src="/console/brand.svg" alt="" width="30" height="30" /><span
+            >智算纳管<small>AI MONITOR</small></span
+          ></a
+        >
+        <nav>
+          <a class="nav-link" href="#/overview" data-nav="overview"
+            ><i data-lucide="layout-dashboard"></i>总览</a
+          >
+          <a class="nav-link" href="#/jobs" data-nav="jobs"
+            ><i data-lucide="list-checks"></i>任务</a
+          >
+          <a class="nav-link" href="#/services" data-nav="services"
+            ><i data-lucide="radio-tower"></i>在线服务</a
+          >
+          <a class="nav-link" href="#/tenants" data-nav="tenants"
+            ><i data-lucide="layers"></i>租户资源</a
+          >
+          <a class="nav-link" href="#/audits" data-nav="audits"
+            ><i data-lucide="history"></i>操作审计</a
+          >
+        </nav>
+        <div class="sidebar-footer">
+          <span class="subtle">K8s 管理员</span
+          ><span>__ACCOUNT_USERNAME__</span>
+        </div>
+      </aside>
+      <div class="main">
+        <header class="topbar">
+          <button
+            id="nav-toggle"
+            class="icon-button"
+            title="展开导航"
+            aria-label="展开导航"
+            aria-expanded="false"
+          >
+            <i data-lucide="menu"></i>
+          </button>
+          <div class="scope">
+            <i data-lucide="activity"></i
+            ><span>监控台<small id="scope-current">全部命名空间</small></span>
+          </div>
+          <span id="environment" class="environment"></span>
+          <span class="account">__ACCOUNT_USERNAME__</span>
+          <form action="/logout" method="post" id="logout-form">
+            <button class="icon-button" title="退出登录" aria-label="退出登录">
+              <i data-lucide="log-out"></i>
+            </button>
+          </form>
+        </header>
+        <main id="page" tabindex="-1" aria-label="监控内容"></main>
+      </div>
+    </div>
+    <dialog id="modal" aria-labelledby="modal-title"></dialog>
+    <div id="toast" class="toast" role="status" hidden></div>
+    <noscript>请启用 JavaScript 后访问监控台。</noscript>
+  </body>
+</html>

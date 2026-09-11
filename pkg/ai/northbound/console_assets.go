@@ -14,6 +14,11 @@ func userConsoleHTML() string {
 	return string(content)
 }
 
+func monitorConsoleHTML() string {
+	content, _ := userConsoleFiles.ReadFile("console/monitor.html")
+	return string(content)
+}
+
 func serveConsoleAsset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -24,6 +29,8 @@ func serveConsoleAsset(w http.ResponseWriter, r *http.Request) {
 		"app.js": "text/javascript", "api.js": "text/javascript", "create.js": "text/javascript",
 		"state.js": "text/javascript", "lucide.js": "text/javascript",
 		"styles.css": "text/css", "brand.svg": "image/svg+xml",
+		"monitor.js": "text/javascript", "monitor-state.js": "text/javascript",
+		"monitor-api.js": "text/javascript", "monitor.css": "text/css",
 	}[name]
 	if !ok {
 		http.NotFound(w, r)

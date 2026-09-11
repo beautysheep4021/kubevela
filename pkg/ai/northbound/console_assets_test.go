@@ -37,14 +37,14 @@ func TestUserConsoleAssetsAndSession(t *testing.T) {
 			}
 		})
 	}
-	for _, path := range []string{"/api/v1/ai/session", "/console/app.js"} {
+	for _, path := range []string{"/api/v1/ai/session", "/console/app.js", "/console/monitor.js", "/console/monitor-api.js"} {
 		w := httptest.NewRecorder()
 		server.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("anonymous %s: %d", path, w.Code)
 		}
 	}
-	for _, path := range []string{"/console/api.test.cjs", "/console/index.html", "/console/../auth.go"} {
+	for _, path := range []string{"/console/api.test.cjs", "/console/monitor-api.test.cjs", "/console/index.html", "/console/monitor.html", "/console/../auth.go"} {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodGet, path, nil)
 		r.AddCookie(cookie)
@@ -52,5 +52,17 @@ func TestUserConsoleAssetsAndSession(t *testing.T) {
 		if w.Code == http.StatusOK {
 			t.Fatalf("unexpected exposed asset %s", path)
 		}
+	}
+}
+
+func TestMonitorUsesSharedConsoleAssets(t *testing.T) {
+	server := NewServer()
+	cookie := loginForRole(t, server, "monitor", "admin", "jiankong")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/monitor", nil)
+	r.AddCookie(cookie)
+	server.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "/console/monitor.js") || !strings.Contains(w.Body.String(), "/console/styles.css") {
+		t.Fatal("monitor must use the shared console design and dedicated controller")
 	}
 }
