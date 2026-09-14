@@ -21,6 +21,8 @@ import (
 const maxRequestBodyBytes = 1 << 20
 
 type Options struct {
+	NumericExample  *NumericExample
+	DatasetUploads  DatasetUploadStore
 	TenantResources TenantResourceReader
 	Applier         domainapply.ApplicationApplier
 	Reader          ApplicationReader
@@ -147,6 +149,7 @@ func NewServerWithOptions(options Options) http.Handler {
 	mux.HandleFunc("/healthz", healthz)
 	mux.HandleFunc("/console/", auth.requireSession(serveConsoleAsset))
 	mux.HandleFunc("/api/v1/ai/session", auth.requireSession(currentConsoleSession))
+	mux.HandleFunc("/api/v1/ai/examples/numeric", auth.requireSession(numericExample(options.NumericExample)))
 	mux.HandleFunc("/api/v1/ai/validate", auth.requireSession(validate))
 	mux.HandleFunc("/api/v1/ai/normalize", auth.requireSession(normalize))
 	mux.HandleFunc("/api/v1/ai/applications", auth.requireSession(applications(options)))
@@ -157,6 +160,8 @@ func NewServerWithOptions(options Options) http.Handler {
 	mux.HandleFunc("/api/v1/ai/models", auth.requireSession(models(options.Artifacts)))
 	mux.HandleFunc("/api/v1/ai/models/", auth.requireSession(modelDetail(options)))
 	mux.HandleFunc("/api/v1/ai/datasets", auth.requireSession(datasets(options.Datasets)))
+	mux.HandleFunc("/api/v1/ai/dataset-uploads", auth.requireSession(datasetUploads(options.DatasetUploads)))
+	mux.HandleFunc("/api/v1/ai/dataset-uploads/", auth.requireSession(datasetUploads(options.DatasetUploads)))
 	mux.HandleFunc("/api/v1/ai/deliveries/", auth.requireSession(deliveries(options)))
 	return mux
 }
@@ -493,7 +498,7 @@ func models(store ArtifactStore) http.HandlerFunc {
 				asset.JobName = asset.Name
 			}
 			if asset.Status == "" {
-				asset.Status = "trained"
+				asset.Status = "registered"
 			}
 			if asset.Visibility == "" {
 				asset.Visibility = "private"

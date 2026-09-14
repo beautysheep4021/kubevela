@@ -68,6 +68,9 @@ go run ./references/cmd/ai-northbound -addr 127.0.0.1:18095
 `tenant-b / tenant-b-123456`（tenant B）。演示数据保存在页面内存中，刷新重置，不运行真实任务。
 默认测试账号不适用于公网或生产部署。
 
+真实 JSONL 文件上传可通过 `-dataset-dir "$HOME/.local/share/zhisuan/datasets"` 启用，并从不带
+`?demo=local` 的登录页进入数据集页面。文件在服务端本地持久化、按租户隔离；当前上传版本尚未接入集群任务读取，不能据此视为训练数据已就绪。
+
 真实运行需要连接 Kubernetes，并安装 KubeVela 和 AI 组件定义。完整说明见
 **[启动、集群部署与更新指南](references/deploy/ai-northbound/README.md)**。
 

@@ -2,6 +2,17 @@ package main
 
 import "testing"
 
+func TestDatasetDirectoryOption(t *testing.T) {
+	dir := t.TempDir()
+	parsed, err := parseArgs([]string{"-dataset-dir", dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.datasetDir != dir {
+		t.Fatalf("dataset directory = %q", parsed.datasetDir)
+	}
+}
+
 func TestParseArgsDefaultsToLocalhost8088(t *testing.T) {
 	args, err := parseArgs(nil)
 	if err != nil {

@@ -139,7 +139,7 @@ test('service workflow, direct foreign detail denial and asset registration',asy
     await page.locator('#draft-name').fill('tenant-b-new-service');await next(page);await next(page);
     await page.locator('#execution-mode').selectOption('create');await page.getByRole('button',{name:'部署服务',exact:true}).click();
     await page.waitForURL(/services\/ai-tenant-b\/tenant-b-new-service/);
-    await page.locator('[data-nav=datasets]').click();await page.getByRole('button',{name:'登记数据集',exact:true}).click();
+    await page.locator('[data-nav=datasets]').click();await page.getByRole('button',{name:'登记已有数据集',exact:true}).click();
     await page.locator('dialog [name=name]').fill('tenant-b-extra-data');await page.locator('dialog [name=uri]').fill('dataset://ai-tenant-b/extra/v1');
     await page.getByRole('button',{name:'登记',exact:true}).click();await page.getByText('tenant-b-extra-data',{exact:true}).waitFor();
     await page.goto(base+'/user?demo=local#/jobs/ai-tenant-a/tenant-a-training-job');

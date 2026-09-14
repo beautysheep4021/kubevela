@@ -10,6 +10,8 @@
   let items = [], detail = null, updated = '', dirty = false, draft = null, step = 0, draftError = '', submitMessage = '', submitting = false;
   let modelOptions = [], datasetOptions = [], assetError = '', assetLoading = false, result = null, modalAction = null, lastHash = '', uncertain = false;
   let returningList = {jobs:'#/jobs',services:'#/services'}, modalBusy = false, logVersion = 0, pendingNavigation = '';
+  let uploadedAssets = [], uploadError = '', uploadLoading = false, uploadListVersion = 0, uploadController = null;
+  let modalVersion = 0;
   const client = ConsoleAPI.create({...identity,demo,onUnauthorized:expired});
   const request = (path, init) => client.request(path, init);
   const apiRoot = '/api/v1/ai';
@@ -26,6 +28,8 @@
   function icons() { if (globalThis.lucide) lucide.createIcons(); }
   function toast(message) { const el = document.getElementById('toast'); el.textContent = message; el.hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => {el.hidden = true;},5000); }
   function expired() {
+    uploadedAssets=[];uploadListVersion++;modalVersion++;modalBusy=false;pendingNavigation='';
+    if(uploadController)uploadController.abort();uploadController=null;
     clearTimeout(timer); routeVersion++; items=[]; detail=null; draft=null; dirty=false; modelOptions=[]; datasetOptions=[];
     if (modal.open) modal.close();
     page.innerHTML='<div class="empty-state"><h1>会话已失效或账号已切换</h1><a class="button primary" href="/login'+(demo?'?demo=local':'')+'">重新登录</a></div>';
@@ -56,10 +60,83 @@
     const failed=items.filter(i=>S.status(i,S.kind(i)).key==='failed');
     return `<div class="summary-strip">${[[jobs.length,'任务总数'],[jobs.filter(i=>S.status(i,'AIJob').key==='running').length,'运行中任务'],[services.filter(i=>S.status(i,'AIService').key==='ready').length,'就绪服务'],[failed.length,'失败项']].map(([n,l])=>`<div class="summary-item"><strong>${n}</strong><span>${l}</span></div>`).join('')}</div>${failed.length?`<div class="section-head"><h2>需要处理</h2></div>${workTable(failed)}`:''}<div class="section-head"><h2>最近任务</h2><a href="#/jobs">全部任务 ${icon('arrow-right')}</a></div>${workTable(jobs.slice(0,5),'AIJob')}<div class="section-head"><h2>在线服务</h2><a href="#/services">全部服务 ${icon('arrow-right')}</a></div>${workTable(services.slice(0,5),'AIService')}`;
   }
+  const numericReady = asset => asset && asset.source==='numeric-example' && asset.status==='ready';
+  const assetStatus = asset => numericReady(asset)?'可运行':({registered:'仅登记',trained:'已登记训练产物',published:'已发布',released:'已发布',failed:'失败'}[asset.status]||'仅登记');
   function assetTable() {
     const models = route.section==='models';
-    if (!items.length) return empty(models?'暂无模型资产':'暂无数据集',button('register',models?'登记模型':'登记数据集','plus',true));
-    return `<div class="table-wrap"><table><thead><tr><th>名称</th><th>${models?'版本 / 评测':'格式 / 状态'}</th><th>来源</th><th>操作</th></tr></thead><tbody>${items.map((a,i)=>`<tr><td><strong>${E(a.displayName||a.name)}</strong> ${sample(a)}<div class="subtle">${E(a.namespace)}</div></td><td>${E(models ? a.version||'未提供' : a.format||'未提供')}<div class="subtle">${E(models ? ({passed:'评测通过',failed:'评测未通过',pending:'待评测'}[a.evaluationStatus]||'暂无评测结果') : a.status||'registered')}</div></td><td>${a.jobName?`<a href="${detailHash('AIJob',a.namespace,a.jobName)}">${E(a.jobName)}</a>`:E(a.source||'手动登记')}</td><td><div class="actions">${button('asset-train','用于训练','play')}${button('asset-eval','评测','flask-conical')}${models?button('asset-deploy','部署','rocket'):''}${iconButton('asset-detail','查看资产详情','info')}</div><span hidden data-index="${i}"></span></td></tr>`).join('')}</tbody></table></div>`;
+    if (!items.length) return empty(models?'暂无模型资产':'暂无数据集',button('register',models?'登记已有模型':'登记已有数据集','plus'));
+    return `<div class="table-wrap"><table><thead><tr><th>名称</th><th>${models?'版本 / 状态':'格式 / 状态'}</th><th>来源</th><th>操作</th></tr></thead><tbody>${items.map((a,i)=>`<tr><td><strong>${E(a.displayName||a.name)}</strong> ${sample(a)}<div class="subtle">${E(a.namespace)}</div></td><td>${E(models ? a.version||'未提供' : a.format||'未提供')}<div class="subtle">${assetStatus(a)}${models&&a.evaluationStatus?' · '+E({passed:'评测通过',failed:'评测未通过',pending:'待评测'}[a.evaluationStatus]||'暂无评测结果'):''}</div></td><td>${a.source==='numeric-example'?'轻量数值预测示例':a.jobName?`<a href="${detailHash('AIJob',a.namespace,a.jobName)}">${E(a.jobName)}</a>`:E(a.source||'手动登记')}</td><td><div class="actions">${numericReady(a)?button('asset-numeric-job','运行预测任务','play')+(models?button('asset-numeric-service','部署预测服务','rocket'):''):a.source==='numeric-example'?'':button('asset-train','用于训练','play')+button('asset-eval','评测','flask-conical')+(models?button('asset-deploy','部署','rocket'):'')}${iconButton('asset-detail','查看资产详情','info')}</div><span hidden data-index="${i}"></span></td></tr>`).join('')}</tbody></table></div>`;
+  }
+  async function uploadRequest(path, init) {
+    if(demo)throw new Error('演示环境不支持真实数据集上传，也不会保存文件。');
+    try {return await request(path,init);} catch(err) {
+      if(err.status===503)throw Object.assign(new Error('上传存储未配置，请联系管理员启用本地上传存储。'),{status:503});
+      throw err;
+    }
+  }
+  function uploadBody(form) {
+    const name=String(form.get('name')||'').trim(), file=form.get('file');
+    if(!/^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$/.test(name))throw new Error('名称需为 1–63 位小写字母、数字或连字符，首尾不能是连字符。');
+    if(!file || typeof file.name!=='string' || !/\.jsonl$/i.test(file.name))throw new Error('请选择 .jsonl 文件。');
+    if(!file.size || file.size>10*1024*1024)throw new Error('文件不能为空，且不能超过 10 MiB。');
+    const body=new FormData();body.set('namespace',identity.namespace);body.set('name',name);body.set('file',file);
+    return body;
+  }
+  function uploadSize(bytes) {
+    return Number.isFinite(bytes)?(bytes<1024?bytes+' B':bytes<1024*1024?(bytes/1024).toFixed(1)+' KiB':(bytes/1024/1024).toFixed(2)+' MiB'):'未提供';
+  }
+  function uploadedTable() {
+    if(!uploadedAssets.length)return empty('暂无本地上传数据集');
+    return `<div class="table-wrap"><table><thead><tr><th>名称 / 版本</th><th>数据量</th><th>存储 / 状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${uploadedAssets.map((a,i)=>`<tr><td><strong>${E(a.name)}</strong><div class="subtle" title="${E(a.version)}">${E((a.version||'').slice(0,12))}</div></td><td>${E(a.rows ?? '未提供')} 行<div class="subtle">${E(uploadSize(a.bytes))} · ${E(a.format||'jsonl')}</div></td><td>本地持久化<div class="subtle">${a.status==='validated'?'校验通过':E(a.status||'未提供')} · 集群运行未就绪</div></td><td>${E(time(a.createdAt))}</td><td>${iconButton('upload-preview','查看数据预览','eye')}<span hidden data-upload-index="${i}"></span></td></tr>`).join('')}</tbody></table></div>`;
+  }
+  function renderUploads() {
+    const section=document.getElementById('uploaded-datasets');if(!section)return;
+    section.innerHTML='<div class="section-head"><h2>本地上传数据集</h2>'+iconButton('refresh-uploads','刷新上传数据集','refresh-cw')+'</div>'+(demo?'<div class="notice">演示环境不支持真实上传，不会保存文件。</div>':(uploadError?notice(uploadError,'refresh-uploads'):'')+(uploadLoading?'<div class="loading" role="status">正在读取上传数据集…</div>':uploadedTable()));icons();
+  }
+  async function loadUploads() {
+    const v=routeVersion, seq=++uploadListVersion;uploadError='';uploadLoading=true;renderUploads();
+    if(demo){uploadLoading=false;renderUploads();return;}
+    try {
+      const data=await uploadRequest(listPath('dataset-uploads'));
+      if(v!==routeVersion || seq!==uploadListVersion)return;
+      uploadedAssets=(data.items||[]).filter(a=>a.namespace===identity.namespace).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+    }catch(err){
+      if(v!==routeVersion || seq!==uploadListVersion || err.status===401)return;
+      uploadedAssets=[];uploadError=err.status===503?err.message:errorText(err);
+    }finally{if(v===routeVersion && seq===uploadListVersion){uploadLoading=false;renderUploads();}}
+  }
+  function uploadDataset() {
+    if(demo){showModal('上传不可用','<div class="notice">演示环境不支持真实数据集上传，也不会保存文件。</div>',async()=>{},'关闭');return;}
+    showModal('上传数据集',`<div class="notice">文件保存在服务端本地存储，尚不可用于集群训练或评测。</div>${modalField('name','数据集名称')}<label class="field">JSONL 文件（最大 10 MiB）<input name="file" type="file" accept=".jsonl" required></label><div id="upload-progress" role="status"></div>`,async (form,isCurrent)=>{
+      const body=uploadBody(form), controller=new AbortController();uploadController=controller;
+      const progress=document.getElementById('upload-progress');progress.textContent='正在上传并校验…';
+      try {
+        await uploadRequest(apiRoot+'/dataset-uploads',{method:'POST',body,signal:controller.signal});
+        if(!isCurrent())return;
+        toast('数据集已保存到服务端本地存储，尚不可用于集群执行。');await loadUploads();
+      }catch(err){
+        if(!isCurrent())return;
+        if(err.status===0 || err.name==='AbortError' || err.name==='TimeoutError'){
+          await loadUploads();throw new Error('上传结果尚未确认，文件可能已保存。请关闭弹窗并刷新本地上传列表确认。');
+        }
+        if(err.status===503)throw new Error(err.message);
+        throw err;
+      }finally{if(uploadController===controller)uploadController=null;if(isCurrent()&&progress.isConnected)progress.textContent='';}
+    },'上传');
+  }
+  async function previewUpload(asset) {
+    if(!asset || asset.namespace!==identity.namespace)return;
+    showModal('数据集预览','<div id="upload-preview-content" class="loading" role="status">正在读取预览…</div>',async()=>{},'关闭');
+    const version=modalVersion, context=routeVersion;
+    const isCurrent=()=>version===modalVersion&&context===routeVersion&&modal.open;
+    const target=document.getElementById('upload-preview-content');
+    try {
+      const a=await uploadRequest(`${apiRoot}/dataset-uploads/${[asset.namespace,asset.name,asset.version].map(encodeURIComponent).join('/')}`);
+      if(!isCurrent() || !target.isConnected)return;
+      if(a.namespace!==identity.namespace)throw Object.assign(new Error('无权访问此数据集。'),{status:403});
+      target.classList.remove('loading');
+      target.innerHTML=definition([['名称',a.name],['所属空间',a.namespace],['所有者',a.owner],['格式',a.format],['行数',String(a.rows ?? '未提供')],['大小',uploadSize(a.bytes)],['创建时间',time(a.createdAt)],['存储','服务端本地持久化'],['校验状态',a.status==='validated'?'校验通过':a.status],['集群执行','未就绪']])+`<div class="subtle" title="${E(a.version)}">版本 ${E((a.version||'').slice(0,12))}</div><div class="section-head"><h2>数据预览</h2></div>`+((a.preview||[]).length?'<p class="subtle">前 5 条记录内的样本，超出预览大小限制的记录已省略。</p>'+(a.preview||[]).map((row,i)=>`<details${i===0?' open':''}><summary>样本 ${i+1}</summary>${definition(Object.entries(row).map(([key,value])=>[key,typeof value==='object'?JSON.stringify(value):String(value)]))}</details>`).join(''):empty(a.rows>0?'前 5 条记录超出预览大小限制':'暂无预览数据'));
+    }catch(err){if(isCurrent()&&target.isConnected)target.innerHTML=notice(err.status===503?err.message:errorText(err),'');}
   }
   function renderCollection() {
     const collection=document.getElementById('collection');
@@ -67,7 +144,11 @@
       collection.innerHTML=workTable(filtered(items),route.section==='jobs'?'AIJob':'AIService');
       document.getElementById('page-error').innerHTML='';icons();return;
     }
-    const actions=route.section==='overview'?button('new-job','创建任务','plus',true)+button('new-service','部署服务','rocket') : route.section==='jobs'?button('new-job','创建任务','plus',true) : route.section==='services'?button('new-service','部署服务','plus',true):button('register',route.section==='models'?'登记模型':'登记数据集','plus',true);
+    if(route.section==='datasets'){
+      page.innerHTML=heading(titles.datasets,button('upload-dataset','上传数据集','upload',true)+button('numeric-initialize','使用示例数据','flask-conical')+button('register','登记已有数据集','plus'))+'<section id="uploaded-datasets"></section><section id="registered-datasets"><div class="section-head"><h2>数据集资产</h2></div><div id="page-error"></div><div id="collection"></div></section>';
+      document.getElementById('collection').innerHTML=assetTable();renderUploads();icons();return;
+    }
+    const actions=route.section==='overview'?button('new-job','创建任务','plus',true)+button('new-service','部署服务','rocket') : route.section==='jobs'?button('new-job','创建任务','plus',true) : route.section==='services'?button('new-service','部署服务','plus',true):button('numeric-initialize','使用示例模型','flask-conical',true)+button('register','登记已有模型','plus');
     page.innerHTML=heading(titles[route.section],actions)+'<div id="page-error"></div>'+(route.section==='overview'?`<div class="section-head"><span class="subtle">${updated?'更新于 '+E(updated):''}</span>${iconButton('refresh','刷新工作台','refresh-cw')}</div>`: ['jobs','services'].includes(route.section)?filters():'')+'<section id="collection"></section>';
     document.getElementById('collection').innerHTML=route.section==='overview'?overview():['models','datasets'].includes(route.section)?assetTable():workTable(filtered(items),route.section==='jobs'?'AIJob':'AIService');
     icons();
@@ -77,6 +158,8 @@
     clearTimeout(timer);
     const version=routeVersion, seq=++requestVersion;
     if (initial) page.innerHTML=heading(route.detail?route.name:titles[route.section])+'<div class="loading" role="status">正在读取…</div>';
+    const datasetsPage=route.section==='datasets'&&!route.detail;
+    if(datasetsPage){if(initial)renderCollection();loadUploads();}
     try {
       if (route.detail) {
         if (route.namespace !== identity.namespace) throw Object.assign(new Error('当前账号无权访问此资源。'),{status:403});
@@ -100,13 +183,16 @@
     } catch(err) {
       if(version!==routeVersion || seq!==requestVersion || err.status===401)return;
       failures++;
-      if(err.status===403 || err.status===404){items=[];detail=null;page.innerHTML=heading(route.detail?route.name:titles[route.section])+'<div id="page-error"></div>';}
-      if(initial || !document.getElementById('page-error'))page.innerHTML=heading(route.detail?route.name:titles[route.section])+'<div id="page-error"></div>';
+      if(datasetsPage){items=[];renderCollection();}
+      else {
+        if(err.status===403 || err.status===404){items=[];detail=null;page.innerHTML=heading(route.detail?route.name:titles[route.section])+'<div id="page-error"></div>';}
+        if(initial || !document.getElementById('page-error'))page.innerHTML=heading(route.detail?route.name:titles[route.section])+'<div id="page-error"></div>';
+      }
       document.getElementById('page-error').innerHTML=notice(errorText(err));icons();
     }
     if(version===routeVersion && (!route.detail || !detail || !S.status(detail,route.section==='jobs'?'AIJob':'AIService').terminal) && failures<4 && (!route.detail || route.tab==='overview')) timer=setTimeout(()=>refresh(),Math.min(10000*2**failures,60000));
   }
-  function definition(entries) {return `<dl class="detail-meta">${entries.map(([k,v])=>`<div><dt>${E(k)}</dt><dd>${E(v || '未提供')}</dd></div>`).join('')}</dl>`;}
+  function definition(entries) {return `<dl class="detail-meta">${entries.map(([k,v])=>`<div><dt>${E(k)}</dt><dd>${E(v == null || v === '' ? '未提供' : v)}</dd></div>`).join('')}</dl>`;}
   function detailOverview() {
     const components=detail.components||[], meta=detail.aiMetadata||{};
     const events=components.flatMap(c=>(c.pods||[]).flatMap(p=>(p.events||[]).map(e=>({...e,pod:p.name}))));
@@ -124,7 +210,8 @@
     if(route.tab==='config')body.innerHTML='<div class="section-head"><h2>已观测配置</h2></div>'+json({aiMetadata:detail.aiMetadata,components:detail.components});
     if(route.tab==='logs'){body.innerHTML='<div class="filters"><label>Pod<select id="log-pod"><option value="">自动选择</option></select></label><label>容器<select id="log-container"><option value="">自动选择</option></select></label><label>日志行数<input id="log-tail" type="number" min="1" max="2000" value="200"></label>'+button('logs','刷新日志','refresh-cw')+'</div><div id="log-error"></div><pre id="log-output" class="log-output" role="status">正在读取日志…</pre>';loadLogs();}
     if(route.tab==='result') {
-      body.innerHTML=job?`<div class="section-head"><h2>任务产物</h2>${button('parse-result','读取运行结果','refresh-cw')}</div><div id="result-output">${empty('尚未读取运行结果')}</div>`:`<div class="section-head"><h2>访问检查</h2>${button('probe','检查服务访问','activity',true)}</div><div class="notice">检查服务端点的连通性与响应，不代表模型推理正确性。</div>${definition((detail.components||[]).filter(c=>c.service&&c.service.name).map(c=>['集群内服务',c.service.name+' · '+(c.service.clusterIP||'')]))}<div id="result-output"></div>`;
+      const numeric=detail.aiMetadata&&detail.aiMetadata['ai.oam.dev/source']==='numeric-example';
+      body.innerHTML=job?`<div class="section-head"><h2>任务产物</h2>${button('parse-result','读取运行结果','refresh-cw')}</div><div id="result-output">${empty('尚未读取运行结果')}</div>`:`<div class="section-head"><h2>访问检查</h2>${button('probe','检查服务访问','activity',true)}</div><div class="notice">检查服务端点的连通性与响应，不代表模型推理正确性。</div>${definition((detail.components||[]).filter(c=>c.service&&c.service.name).map(c=>['集群内服务',c.service.name+' · '+(c.service.clusterIP||'')]))}${numeric?`<div class="section-head"><h2>数值预测</h2></div><div class="form-grid"><label class="field">x 数值<input id="numeric-x" type="number" step="any" inputmode="decimal"></label><button id="numeric-predict-button" type="button" class="button primary" data-action="numeric-predict">${icon('activity')}预测</button></div><div id="numeric-prediction" role="status"></div>`:''}<div id="result-output"></div>`;
       if(job && result)renderResult();
     }
     icons();
@@ -160,17 +247,27 @@
   }
   function renderResult() {
     if(!result || !document.getElementById('result-output'))return;
-    document.getElementById('result-output').innerHTML=`${sample(detail)}${definition([['产物',result.modelURI],['摘要',result.summary]])}${result.metrics?`<div class="table-wrap"><table><thead><tr><th>结果指标</th><th>值</th></tr></thead><tbody>${Object.entries(result.metrics).map(([k,v])=>`<tr><td>${E(k)}</td><td>${E(v)}</td></tr>`).join('')}</tbody></table></div>`:''}<div class="actions">${button('register-result','登记模型','box',true)}${button('publish-result','发布为服务','rocket')}</div>`;
+    const numeric=detail.aiMetadata&&detail.aiMetadata['ai.oam.dev/source']==='numeric-example';
+    const uri=numeric?'<details><summary>高级信息</summary>'+definition([['模型文件地址',result.modelURI]])+'</details>':definition([['产物',result.modelURI]]);
+    document.getElementById('result-output').innerHTML=`${sample(detail)}${uri}${definition([['摘要',result.summary]])}${result.metrics?`<div class="table-wrap"><table><thead><tr><th>结果指标</th><th>值</th></tr></thead><tbody>${Object.entries(result.metrics).map(([k,v])=>`<tr><td>${E(k)}</td><td>${E(v)}</td></tr>`).join('')}</tbody></table></div>`:''}<div class="actions">${numeric?button('numeric-result-service','部署预测服务','rocket',true):button('register-result','登记模型','box',true)+button('publish-result','发布为服务','rocket')}</div>`;
     icons();
   }
+  async function predictNumeric() {
+    const output=document.getElementById('numeric-prediction'), input=document.getElementById('numeric-x'), submit=document.querySelector('[data-action="numeric-predict"]');
+    if(!output||!input||!submit||submit.disabled||route.section!=='services'||!detail||detail.aiMetadata?.['ai.oam.dev/source']!=='numeric-example')return;
+    const raw=String(input.value??'').trim(), x=Number(raw);if(demo){output.innerHTML=notice('演示环境不支持真实预测，请使用集群模式。','');return;}if(!raw||!Number.isFinite(x)){output.innerHTML=notice('请输入有限数值。','');return;}
+    submit.disabled=true;const v=routeVersion;try{const data=await request(apiRoot+'/examples/numeric',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'predict',x})});if(v!==routeVersion)return;output.innerHTML=definition([['x',data.x],['预测值 y',data.prediction??data.y]])+`<details><summary>高级信息</summary>${json(data)}</details>`;}catch(err){if(v===routeVersion)output.innerHTML=notice(errorText(err),'');}finally{if(v===routeVersion)submit.disabled=false;}
+  }
   function showModal(title, body, action, submitLabel='确认') {
+    modalVersion++;pendingNavigation='';
+    if(uploadController)uploadController.abort();uploadController=null;
     modalAction=action;modalBusy=false;
     modal.innerHTML=`<form id="modal-form"><div class="dialog-head"><h2 id="modal-title">${E(title)}</h2>${iconButton('close-modal','关闭','x')}</div><div class="dialog-body">${body}<div id="modal-error" role="alert"></div></div><div class="dialog-actions">${button('close-modal','取消')}<button class="button primary" type="submit">${E(submitLabel)}</button></div></form>`;
     modal.showModal();icons();
   }
   function modalField(name,label,value='',type='text') {return `<label class="field">${E(label)}<input name="${name}" type="${type}" value="${E(value)}" required></label>`;}
   function registerAsset(models, supplied) {
-    showModal(models?'登记模型':'登记数据集',`<div class="form-grid">${modalField('name','名称',supplied?route.name+'-model':'')}${models?modalField('version','版本','v1'):modalField('format','数据格式','sharegpt-jsonl')}${modalField('uri',models?'模型存储引用':'数据存储引用',supplied?supplied.modelURI:'')}</div>`,async form=>{
+    showModal(models?'登记已有模型':'登记已有数据集',`<div class="form-grid">${modalField('name','名称',supplied?route.name+'-model':'')}${models?modalField('version','版本','v1'):modalField('format','数据格式','sharegpt-jsonl')}${modalField('uri',models?'模型文件地址':'数据文件地址',supplied?supplied.modelURI:'')}</div>`,async form=>{
       const name=form.get('name').trim();if(!name)throw new Error('请输入名称。');
       const payload={namespace:identity.namespace,name,owner:identity.username,visibility:'private',status:'registered'};
       if(models)Object.assign(payload,{modelURI:form.get('uri'),version:form.get('version'),jobName:supplied?route.name:'',metrics:supplied?supplied.metrics:undefined,summary:supplied?supplied.summary:undefined});
@@ -195,15 +292,33 @@
       toast('服务已提交');navigate(detailHash('AIService',ns,data.serviceName));
     },'发布服务');
   }
+  function numericExample(action, asset) {
+    if(modalBusy)return;
+    if(action!=='initialize' && (!numericReady(asset) || asset.namespace!==identity.namespace))return;
+    const initialize=action==='initialize', service=action==='service';
+    const label=initialize?'导入模型和数据':service?'部署预测服务':'运行预测任务';
+    const cost=initialize?'同时导入配套模型和数据集，仅使用当前账号已有命名空间；重复导入复用已有示例资产，不启动计算任务。':service?'部署真实 CPU 预测服务，使用内存，不申请 GPU；服务将持续占用资源，直至删除。':'创建真实 CPU 预测任务，使用内存，不申请 GPU；任务完成后释放计算资源。';
+    showModal('轻量数值预测示例',`<p>线性数值预测：y = 2x + 1。非大语言模型（LLM），不进行语言生成或模型训练。</p>${definition([['命名空间',identity.namespace],...(asset?[['当前资产',asset.displayName||asset.name]]:[]),...(!initialize?[['资源申请','100m CPU / 64Mi 内存 / 0 GPU'],['资源上限','500m CPU / 128Mi 内存'],...(service?[['副本数','1']]:[])]:[])])}<div class="notice">${E(cost)}</div>`,async(form,isCurrent)=>{
+      if(demo)throw new Error('演示环境不支持真实示例导入、预测任务或预测服务，请使用集群模式。');
+      const data=await request(apiRoot+'/examples/numeric',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
+      if(!isCurrent())return;
+      const kind=service?'AIService':'AIJob';
+      if(!data || data.namespace!==identity.namespace || (initialize?(!data.modelName||!data.datasetName):(!data.applicationName||(data.kind&&data.kind!==kind))))throw new Error('示例接口响应不完整或资源归属不匹配，请刷新列表确认结果。');
+      if(initialize){toast('已导入模型 '+data.modelName+' 和数据集 '+data.datasetName);await refresh();}
+      else {toast(label+'已提交');navigate(detailHash(kind,data.namespace,data.applicationName));}
+    },label);
+  }
   function assetDetail(asset) {
-    const models=route.section==='models';
-    showModal('资产详情',json(asset)+(models?modalField('evaluationJobName','评测任务名称',''):''),async form=>{
-      if(!models)return;
+    const models=route.section==='models', numeric=asset.source==='numeric-example', sync=models&&!numeric;
+    const info=definition([['名称',asset.displayName||asset.name],['命名空间',asset.namespace],['状态',assetStatus(asset)],[models?'版本':'格式',models?asset.version:asset.format],[models?'文件':'数据文件',models?'model.json':'data.jsonl'],['来源',numeric?'轻量数值预测示例':asset.source||'手动登记']]);
+    const exampleInfo=!numeric?'':models?definition([['模型','y = 2x + 1'],['斜率','2'],['截距','1'],['类型','线性数值预测，非大语言模型（LLM）']]):'<div class="section-head"><h2>数据预览</h2></div><div class="table-wrap"><table><thead><tr><th>x</th><th>y</th></tr></thead><tbody>'+[0,1,2,3,4].map(x=>`<tr><td>${x}</td><td>${2*x+1}</td></tr>`).join('')+'</tbody></table></div>';
+    showModal('资产详情',info+exampleInfo+`<details><summary>高级信息</summary>${definition([[models?'模型文件地址':'数据文件地址',models?asset.modelURI:asset.datasetURI]])}${json(asset)}</details>`+(sync?modalField('evaluationJobName','评测任务名称',''):''),async form=>{
+      if(!sync)return;
       const summary=await request(objectPath(form.get('evaluationJobName'),identity.namespace)+'/status');
       if(purpose(summary)!=='evaluation')throw new Error('请选择用途为评测的任务，不能使用训练任务的结果。');
       await request(`${apiRoot}/models/${encodeURIComponent(identity.namespace)}/${encodeURIComponent(asset.name)}/sync-evaluation`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({evaluationJobName:form.get('evaluationJobName')})});
       toast('评测结果已同步');await refresh();
-    },models?'同步评测结果':'关闭');
+    },sync?'同步评测结果':'关闭');
   }
   function navigate(hash,force=false) {
     if(modalBusy){pendingNavigation=hash;return;}
@@ -220,6 +335,7 @@
       dirty=false;draft=null;
     }
     routeVersion++;clearTimeout(timer);failures=0;route=S.route(hash);lastHash=hash;items=[];detail=null;result=null;updated='';
+    uploadedAssets=[];uploadError='';uploadLoading=false;uploadListVersion++;
     if(modal.open&&!modalBusy)modal.close();
     document.body.classList.remove('nav-open');document.getElementById('nav-toggle').setAttribute('aria-expanded','false');
     document.querySelectorAll('[data-nav]').forEach(el=>{if(el.dataset.nav===route.section)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
@@ -252,7 +368,7 @@
   function createInputs() {
     const job=draft.kind==='AIJob';
     const needsModel=job?draft.purpose!=='batch':draft.purpose==='service';
-    return `<div class="form-grid">${field('name',job?'任务名称':'服务名称')}${field('example','运行方式','text',draft.purpose==='agent'||draft.purpose==='batch'||draft.purpose==='offline-inference'?[['false','自定义容器']]:[['true','示例运行时'],['false','自定义容器']])}</div>${draft.example?'<div class="notice">示例运行时用于验证纳管流程，不执行真实训练、评测或模型推理。</div>':''}${assetLoading?'<div class="loading" role="status">正在读取资产…</div>':''}${assetError?notice(assetError,'reload-assets'):''}<div class="form-grid">${needsModel?field('modelURI',job?'输入模型':'模型版本','text',chosenOptions(modelOptions,'modelURI','模型')):''}${job&&draft.purpose!=='batch'?field('datasetURI','输入数据集','text',chosenOptions(datasetOptions,'datasetURI','数据集')):''}${field('image','容器镜像')}${field('runtime','运行时','text',[['batch','Batch'],['http','HTTP'],['pytorch','PyTorch'],['vllm','vLLM'],['triton','Triton'],['custom','自定义']])}${!draft.example?field('command','启动命令','textarea'):''}${job&&draft.purpose==='training'?field('epochs','Epoch','number')+field('learningRate','学习率'):''}${job&&draft.purpose==='evaluation'?field('threshold','通过阈值（0–1）','number'):''}</div>${needsModel?`<div class="actions">${button('register-create-model','登记模型','plus')}${job?button('register-create-dataset','登记数据集','plus'):''}</div>`:''}`;
+    return `<div class="form-grid">${field('name',job?'任务名称':'服务名称')}${field('example','运行方式','text',draft.purpose==='agent'||draft.purpose==='batch'||draft.purpose==='offline-inference'?[['false','自定义容器']]:[['true','示例运行时'],['false','自定义容器']])}</div>${draft.example?'<div class="notice">示例运行时用于验证纳管流程，不执行真实训练、评测或模型推理。</div>':''}${assetLoading?'<div class="loading" role="status">正在读取资产…</div>':''}${assetError?notice(assetError,'reload-assets'):''}<div class="form-grid">${needsModel?field('modelURI',job?'输入模型':'模型版本','text',chosenOptions(modelOptions,'modelURI','模型')):''}${job&&draft.purpose!=='batch'?field('datasetURI','输入数据集','text',chosenOptions(datasetOptions,'datasetURI','数据集')):''}${field('image','容器镜像')}${field('runtime','运行时','text',[['batch','Batch'],['http','HTTP'],['pytorch','PyTorch'],['vllm','vLLM'],['triton','Triton'],['custom','自定义']])}${!draft.example?field('command','启动命令','textarea'):''}${job&&draft.purpose==='training'?field('epochs','Epoch','number')+field('learningRate','学习率'):''}${job&&draft.purpose==='evaluation'?field('threshold','通过阈值（0–1）','number'):''}</div>${needsModel?`<div class="actions">${button('register-create-model','登记已有模型','plus')}${job?button('register-create-dataset','登记已有数据集','plus'):''}</div>`:''}`;
   }
   function renderCreate() {
     const job=draft.kind==='AIJob', steps=['选择用途','运行配置','资源配置','确认提交'];
@@ -277,8 +393,11 @@
     if(v!==routeVersion || !route.create)return;
     assetLoading=false;
     const [models,datasets]=responses;
-    modelOptions=models.status==='fulfilled'?(models.value.items||[]).filter(a=>a.namespace===identity.namespace):[];
-    datasetOptions=datasets.status==='fulfilled'?(datasets.value.items||[]).filter(a=>a.namespace===identity.namespace):[];
+    modelOptions=models.status==='fulfilled'?(models.value.items||[]).filter(a=>a.namespace===identity.namespace&&a.source!=='numeric-example'):[];
+    datasetOptions=datasets.status==='fulfilled'?(datasets.value.items||[]).filter(a=>a.namespace===identity.namespace&&a.source!=='numeric-example'):[];
+    // A retained numeric selection must not reappear as an unconfirmed custom reference.
+    if(models.status==='fulfilled'&&(models.value.items||[]).some(a=>a.namespace===identity.namespace&&a.source==='numeric-example'&&a.modelURI===draft.modelURI)){draft.modelURI='';draft.modelName='';}
+    if(datasets.status==='fulfilled'&&(datasets.value.items||[]).some(a=>a.namespace===identity.namespace&&a.source==='numeric-example'&&a.datasetURI===draft.datasetURI))draft.datasetURI='';
     const failed=responses.find(r=>r.status==='rejected');assetError=failed?errorText(failed.reason):'';
     // Defaults select visible assets only; custom references are never fabricated.
     if(draft.modelURI==='inline://models/base' || !draft.modelURI){draft.modelURI=modelOptions[0]?.modelURI||'';draft.modelName=modelOptions[0]?.name||draft.modelName;}
@@ -335,16 +454,22 @@
     const stepButton=event.target.closest('[data-step]');if(stepButton&&!stepButton.disabled){step=Number(stepButton.dataset.step);draftError='';renderCreate();return;}
     const el=event.target.closest('[data-action]');if(!el || el.disabled)return;
     const action=el.dataset.action;
-    if(action==='close-modal'){if(!modalBusy)modal.close();return;}
+    if(action==='close-modal'){if(uploadController)uploadController.abort();else if(!modalBusy)modal.close();return;}
+    if(action==='upload-dataset'){uploadDataset();return;}
+    if(action==='refresh-uploads'){loadUploads();return;}
+    if(action==='upload-preview'){await previewUpload(uploadedAssets[Number(el.closest('td').querySelector('[data-upload-index]').dataset.uploadIndex)]);return;}
     if(action==='new-job'||action==='new-service'){draft=null;navigate(action==='new-job'?'#/jobs/new':'#/services/new');return;}
     if(action==='refresh'){refresh();return;}
     if(action==='logs'){loadLogs();return;}
     if(action==='register'){registerAsset(route.section==='models');return;}
+    if(action==='numeric-initialize'){numericExample('initialize');return;}
+    if(action==='numeric-result-service'){numericExample('service',{namespace:identity.namespace,source:'numeric-example',status:'ready',name:route.name});return;}
+    if(action==='numeric-predict'){await predictNumeric();return;}
     if(action==='register-result'){registerAsset(true,result);return;}
     if(action==='publish-result'){publishResult();return;}
     if(['rerun','restart','delete'].includes(action)){lifecycle(action);return;}
     if(['parse-result','probe'].includes(action)) {el.disabled=true;await detailAction(action);if(el.isConnected)el.disabled=false;return;}
-    if(action.startsWith('asset-')) {const asset=items[Number(el.closest('td').querySelector('[data-index]').dataset.index)];if(action==='asset-detail')assetDetail(asset);else prefill(asset,action);return;}
+    if(action.startsWith('asset-')) {const asset=items[Number(el.closest('td').querySelector('[data-index]').dataset.index)];if(action==='asset-detail')assetDetail(asset);else if(action==='asset-numeric-job'||action==='asset-numeric-service')numericExample(action==='asset-numeric-job'?'job':'service',asset);else prefill(asset,action);return;}
     if(action==='cancel-create'){navigate('#/'+route.section);return;}
     if(action==='previous'){step--;draftError='';renderCreate();return;}
     if(action==='next'){if(validateStep(step)){step++;renderCreate();}return;}
@@ -353,7 +478,7 @@
     if(action==='reload-assets'){loadAssetOptions();return;}
     if(action==='register-create-model'||action==='register-create-dataset') {
       const models=action==='register-create-model';
-      showModal(models?'登记模型':'登记数据集',modalField('name','名称')+modalField('uri','存储引用'),async form=>{
+      showModal(models?'登记已有模型':'登记已有数据集',modalField('name','名称')+modalField('uri',models?'模型文件地址':'数据文件地址'),async form=>{
         await request(apiRoot+(models?'/models':'/datasets'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({namespace:identity.namespace,name:form.get('name'),[models?'modelURI':'datasetURI']:form.get('uri'),version:'v1',format:'sharegpt-jsonl',owner:identity.username})});
         draft[models?'modelURI':'datasetURI']=form.get('uri');await loadAssetOptions();toast('已登记');
       },'登记');
@@ -381,11 +506,25 @@
     if(el.id==='log-pod'){document.getElementById('log-container').value='';loadLogs();}
     if(el.id==='log-container')loadLogs();
   });
-  modal.addEventListener('cancel',event=>{if(modalBusy)event.preventDefault();});
+  modal.addEventListener('cancel',event=>{if(modalBusy){event.preventDefault();if(uploadController)uploadController.abort();}});
   modal.addEventListener('submit',async event=>{
     event.preventDefault();if(modalBusy)return;modalBusy=true;
+    const version=modalVersion, context=routeVersion, form=event.target, action=modalAction;
+    // Only the submitting dialog may consume its completion or pending navigation.
+    const sameModal=()=>version===modalVersion&&context===routeVersion&&form===modal.querySelector('#modal-form');
+    const isCurrent=()=>sameModal()&&modal.open;
     const submit=modal.querySelector('[type="submit"]');submit.disabled=true;
-    try{await modalAction(new FormData(event.target));modal.close();}catch(err){pendingNavigation='';const error=modal.querySelector('#modal-error');if(error)error.innerHTML=notice(errorText(err),'');}finally{modalBusy=false;if(submit.isConnected)submit.disabled=false;if(pendingNavigation){const next=pendingNavigation;pendingNavigation='';navigate(next);}}
+    try{
+      await action(new FormData(form),isCurrent);
+      if(isCurrent())modal.close();
+    }catch(err){
+      if(isCurrent()){pendingNavigation='';const error=modal.querySelector('#modal-error');if(error)error.innerHTML=notice(errorText(err),'');}
+    }finally{
+      if(sameModal()){
+        modalBusy=false;if(submit.isConnected)submit.disabled=false;
+        if(pendingNavigation){const next=pendingNavigation;pendingNavigation='';navigate(next);}
+      }
+    }
   });
   loadRoute();icons();
 })();

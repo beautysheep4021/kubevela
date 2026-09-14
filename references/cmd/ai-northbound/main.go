@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
+	"github.com/oam-dev/kubevela/pkg/ai/datasetstorage"
 	domainapply "github.com/oam-dev/kubevela/pkg/ai/domain/apply"
 	"github.com/oam-dev/kubevela/pkg/ai/northbound"
 	"github.com/oam-dev/kubevela/pkg/ai/observe"
@@ -19,6 +21,7 @@ import (
 type args struct {
 	addr       string
 	kubeconfig string
+	datasetDir string
 }
 
 func main() {
@@ -33,8 +36,11 @@ func main() {
 		os.Exit(1)
 	}
 	server := &http.Server{
-		Addr:    parsed.addr,
-		Handler: northbound.NewServerWithOptions(options),
+		Addr:              parsed.addr,
+		Handler:           northbound.NewServerWithOptions(options),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 	fmt.Fprintf(os.Stderr, "ai-northbound listening on %s\n", parsed.addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -48,20 +54,29 @@ func parseArgs(raw []string) (args, error) {
 	flags.SetOutput(os.Stderr)
 	addr := flags.String("addr", "127.0.0.1:8088", "HTTP listen address")
 	kubeconfig := flags.String("kubeconfig", "", "path to kubeconfig used by the deployment endpoint")
+	datasetDir := flags.String("dataset-dir", "", "persistent local directory for validated dataset uploads (not cluster delivery)")
 	if err := flags.Parse(raw); err != nil {
 		return args{}, err
 	}
-	return args{addr: *addr, kubeconfig: *kubeconfig}, nil
+	return args{addr: *addr, kubeconfig: *kubeconfig, datasetDir: *datasetDir}, nil
 }
 
 func buildServerOptions(parsed args) (northbound.Options, error) {
+	options := northbound.Options{}
+	if parsed.datasetDir != "" {
+		repository, err := datasetstorage.New(parsed.datasetDir)
+		if err != nil {
+			return options, fmt.Errorf("initialize dataset storage: %w", err)
+		}
+		options.DatasetUploads = repository
+	}
 	config, err := loadRestConfig(parsed.kubeconfig)
 	if err != nil {
 		if parsed.kubeconfig != "" {
 			return northbound.Options{}, err
 		}
 		fmt.Fprintf(os.Stderr, "ai-northbound deployment endpoint disabled: %v\n", err)
-		return northbound.Options{}, nil
+		return options, nil
 	}
 	client, err := dynamic.NewForConfig(config)
 	if err != nil {
@@ -73,6 +88,8 @@ func buildServerOptions(parsed args) (northbound.Options, error) {
 	}
 	reader := observe.NewClientWithKube(client, kubeClient)
 	return northbound.Options{
+		NumericExample:  &northbound.NumericExample{Kube: kubeClient, Dynamic: client},
+		DatasetUploads:  options.DatasetUploads,
 		TenantResources: reader,
 		Applier:         domainapply.DynamicApplicationApplier{Client: client},
 		Reader:          reader,

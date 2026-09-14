@@ -103,6 +103,7 @@ type ProbeResult struct {
 }
 
 type ModelArtifact struct {
+	Source            string             `json:"source,omitempty"`
 	Namespace         string             `json:"namespace,omitempty"`
 	Name              string             `json:"name"`
 	JobName           string             `json:"jobName"`

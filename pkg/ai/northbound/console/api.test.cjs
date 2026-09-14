@@ -53,6 +53,18 @@ test('real requests return payload and force same-origin credentials', async () 
   assert.equal(options.redirect, 'manual');
   assert.deepEqual(calls, [prefix + '/session', prefix + '/models']);
 });
+
+test('real file uploads retain multipart body and authenticate before sending', async () => {
+  const body = new FormData();body.set('namespace',ownIdentity.namespace);body.set('name','data');body.set('file',new Blob(['{"text":"hello"}\n']),'data.jsonl');
+  let writes=0;
+  const client=harness(async(url,init)=>{
+    if(url===prefix+'/session')return json(ownIdentity);
+    writes++;assert.equal(init.body,body);assert.equal(new Headers(init.headers).has('Content-Type'),false);
+    return json({name:'data',runtimeReady:false},201);
+  }).create(ownIdentity);
+  assert.equal((await client.request(prefix+'/dataset-uploads',{method:'POST',body})).runtimeReady,false);
+  assert.equal(writes,1);
+});
 test('real errors never fall back to demo', async () => {
   for (const status of [400, 403, 404, 503]) {
     let calls = 0;
