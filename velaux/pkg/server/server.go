@@ -48,6 +48,7 @@ import (
 	"github.com/kubevela/velaux/pkg/plugin/proxy"
 	"github.com/kubevela/velaux/pkg/plugin/router"
 	plugintypes "github.com/kubevela/velaux/pkg/plugin/types"
+	"github.com/kubevela/velaux/pkg/server/aiconsole"
 	"github.com/kubevela/velaux/pkg/server/config"
 	"github.com/kubevela/velaux/pkg/server/domain/service"
 	"github.com/kubevela/velaux/pkg/server/event"
@@ -102,6 +103,7 @@ type restServer struct {
 	KubeConfig    *rest.Config          `inject:"kubeConfig"`
 	RBACService   service.RBACService   `inject:""`
 	UserService   service.UserService   `inject:""`
+	aiConsole     *aiconsole.Gateway
 }
 
 // New create api server with config data
@@ -185,6 +187,15 @@ func (s *restServer) buildIoCContainer() error {
 	if err := s.beanContainer.ProvideWithName("registryDatastore", addonStore); err != nil {
 		return fmt.Errorf("fail to provides the registry datastore bean to the container: %w", err)
 	}
+	aiConsole, err := aiconsole.New(s.cfg.AIConsoleEndpoint, s.cfg.AINamespaceTemplate)
+	if err != nil {
+		return err
+	}
+	s.aiConsole = aiConsole
+	if err := s.beanContainer.ProvideWithName("aiConsoleGateway", aiConsole); err != nil {
+		return fmt.Errorf("fail to provides the AI console gateway bean to the container: %w", err)
+	}
+
 	// domain
 	if err := s.beanContainer.Provides(service.InitServiceBean(s.cfg)...); err != nil {
 		return fmt.Errorf("fail to provides the service bean to the container: %w", err)
@@ -402,6 +413,10 @@ func (s *restServer) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 		return
 	case strings.HasPrefix(req.URL.Path, DexRoutePath):
 		s.proxyDexService(res, req)
+		return
+	case req.URL.Path == aiconsole.RoutePrefix || strings.HasPrefix(req.URL.Path, aiconsole.RoutePrefix+"/"):
+		// The AI console keeps its own session, opened by a ticket.
+		s.aiConsole.ServeHTTP(res, req)
 		return
 	default:
 		for _, pre := range api.GetAPIPrefix() {

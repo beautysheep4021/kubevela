@@ -13,6 +13,7 @@ import ApplicationEnvRoute from '../../pages/ApplicationEnvRoute';
 import ApplicationInstanceList from '../../pages/ApplicationInstanceList';
 import Application from '../../pages/ApplicationList';
 import NewApplication from '../../pages/NewApplication';
+import AIConsole from '../../pages/AIConsole';
 import ApplicationLog from '../../pages/ApplicationLog';
 import ApplicationYaml from '../../pages/ApplicationYaml';
 import ApplicationEnvironments from '../../pages/ApplicationEnvironments';
@@ -72,6 +73,14 @@ export default function Router() {
         path="/applications"
         render={(props: any) => {
           return <Application {...props} />;
+        }}
+      />
+      <Route exact path="/ai" render={() => <Redirect to="/ai/overview" />} />
+      <Route
+        exact
+        path="/ai/:section"
+        render={(props: any) => {
+          return <AIConsole {...props} />;
         }}
       />
       <Route

@@ -18,6 +18,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -66,6 +67,14 @@ type Config struct {
 	// match the controller's EnableCelExpressions feature gate, which this
 	// server cannot see.
 	EnableCelExpressions bool
+
+	// AIConsoleEndpoint is the northbound server's URL, whose AI console
+	// VelaUX opens under /ai-console; empty leaves it off.
+	AIConsoleEndpoint string
+
+	// AINamespaceTemplate names the namespace a project's AI workspace is
+	// scoped to, {project} standing for the project.
+	AINamespaceTemplate string
 }
 
 // PluginConfig the plugin directory config
@@ -103,8 +112,10 @@ func NewConfig() *Config {
 			CorePluginPath:   "core-plugins",
 			CustomPluginPath: []string{"plugins"},
 		},
-		DexServerURL:     "http://dex.vela-system:5556",
-		ExitOnLostLeader: true,
+		DexServerURL:        "http://dex.vela-system:5556",
+		ExitOnLostLeader:    true,
+		AIConsoleEndpoint:   os.Getenv("VELAUX_AI_CONSOLE_ENDPOINT"),
+		AINamespaceTemplate: "ai-{project}",
 	}
 }
 
@@ -138,5 +149,7 @@ func (s *Config) AddFlags(fs *pflag.FlagSet, c *Config) {
 	fs.StringArrayVar(&s.PluginConfig.CustomPluginPath, "plugin-path", c.PluginConfig.CustomPluginPath, "the path of the plugin directory")
 	fs.BoolVar(&s.ExitOnLostLeader, "exit-on-lost-leader", c.ExitOnLostLeader, "exit the process if this server lost the leader election")
 	fs.BoolVar(&s.EnableCelExpressions, "enable-cel-expressions", c.EnableCelExpressions, "offer $( ) expression editing in forms; set it to match the controller's EnableCelExpressions feature gate")
+	fs.StringVar(&s.AIConsoleEndpoint, "ai-console-endpoint", c.AIConsoleEndpoint, "the URL of the AI console's northbound server, opened under /ai-console; defaults to $VELAUX_AI_CONSOLE_ENDPOINT, empty turns it off")
+	fs.StringVar(&s.AINamespaceTemplate, "ai-namespace-template", c.AINamespaceTemplate, "the namespace a project's AI workspace is scoped to; {project} stands for the project")
 	profiling.AddFlags(fs)
 }

@@ -26,6 +26,7 @@ import {
 } from 'react-icons/bs';
 import { RiUserSettingsFill } from 'react-icons/ri';
 import { MdConfirmationNumber } from 'react-icons/md';
+import { TbActivityHeartbeat, TbBox, TbBrain, TbBroadcast, TbDatabase, TbListCheck } from 'react-icons/tb';
 import { locationService } from './LocationService';
 import { checkPermission } from '../utils/permission';
 import { getPluginSrv } from './PluginService';
@@ -51,6 +52,32 @@ const defaultWorkspaces: Workspace[] = [
     icon: <AiFillSetting />,
   },
 ];
+
+// aiMenus are the AI platform's pages, each a section of the AI console. The
+// workspace is a project member's; the monitor spans every tenant, so it is
+// the platform admins'.
+function aiMenus(): Menu[] {
+  const workspace = { resource: 'project:?/application:*', action: 'list' };
+  const page = (name: string, label: string, icon: React.ReactNode, permission = workspace): Menu => ({
+    catalog: 'AI Platform',
+    workspace: 'continuous-delivery',
+    type: MenuTypes.Workspace,
+    name: `ai-${name}`,
+    label,
+    to: `/ai/${name}`,
+    icon,
+    permission,
+    relatedRoute: [`/ai/${name}`],
+  });
+  return [
+    page('overview', 'AI Workspace', <TbBrain />),
+    page('jobs', 'Jobs', <TbListCheck />),
+    page('services', 'Online Services', <TbBroadcast />),
+    page('models', 'Models', <TbBox />),
+    page('datasets', 'Datasets', <TbDatabase />),
+    page('monitor', 'AI Monitor', <TbActivityHeartbeat />, { resource: 'systemSetting', action: 'update' }),
+  ];
+}
 
 const defaultWorkspaceMenus: Menu[] = [
   // Provisioning is not built yet: its items show what is coming.
@@ -153,6 +180,8 @@ const defaultWorkspaceMenus: Menu[] = [
     permission: { resource: 'target:*', action: 'list' },
     relatedRoute: ['/targets'],
   },
+  // The AI platform's pages open the AI console, scoped to the picked project.
+  ...aiMenus(),
   {
     catalog: 'Operations',
     workspace: 'continuous-delivery',

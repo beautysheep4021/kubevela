@@ -95,6 +95,7 @@ func InitAPIBean() []interface{} {
 	RegisterAPI(NewWebhook())
 	RegisterAPI(NewRepository())
 	RegisterAPI(NewCloudShell())
+	RegisterAPI(NewAIConsole())
 
 	// Authentication
 	RegisterAPI(NewAuthentication())

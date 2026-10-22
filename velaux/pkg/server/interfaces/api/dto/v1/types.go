@@ -2600,3 +2600,16 @@ type ReportResult struct {
 	Rows        []ReportRow    `json:"rows"`
 	Chart       *ReportChart   `json:"chart,omitempty"`
 }
+
+// CreateAIConsoleTicketRequest asks for a ticket that opens the AI console:
+// the user's workspace scoped to a project, or the platform's monitor.
+type CreateAIConsoleTicketRequest struct {
+	Project string `json:"project,omitempty"`
+	Monitor bool   `json:"monitor,omitempty"`
+}
+
+// AIConsoleTicketResponse is the URL that opens the AI console; it holds a
+// single-use ticket good for a minute.
+type AIConsoleTicketResponse struct {
+	URL string `json:"url"`
+}
