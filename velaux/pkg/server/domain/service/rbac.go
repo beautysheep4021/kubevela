@@ -1,0 +1,1715 @@
+/*
+Copyright 2022 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package service
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"path"
+	"regexp"
+	"strings"
+	"sync"
+
+	"github.com/emicklei/go-restful/v3"
+	"github.com/julienschmidt/httprouter"
+	"github.com/kubevela/pkg/util/slices"
+	"github.com/oam-dev/kubevela/apis/types"
+	"github.com/oam-dev/kubevela/pkg/auth"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/kubevela/velaux/pkg/plugin/router"
+	plugintypes "github.com/kubevela/velaux/pkg/plugin/types"
+	"github.com/kubevela/velaux/pkg/server/domain/model"
+	"github.com/kubevela/velaux/pkg/server/domain/repository"
+	"github.com/kubevela/velaux/pkg/server/infrastructure/datastore"
+	assembler "github.com/kubevela/velaux/pkg/server/interfaces/api/assembler/v1"
+	apisv1 "github.com/kubevela/velaux/pkg/server/interfaces/api/dto/v1"
+	apiserverutils "github.com/kubevela/velaux/pkg/server/utils"
+	"github.com/kubevela/velaux/pkg/server/utils/bcode"
+)
+
+// resourceActions all register resources and actions
+var resourceActions map[string][]string
+var lock sync.Mutex
+var reg = regexp.MustCompile(`(?U)\{.*\}`)
+var defaultPluginResource = "plugin"
+
+// AdminRole is the admin role name
+const AdminRole = "admin"
+
+// The scopes, effect and action of the default permission templates.
+const (
+	permissionScopeProject  = "project"
+	permissionScopePlatform = "platform"
+	permissionAllow         = "Allow"
+	actionDetail            = "detail"
+	actionList              = "list"
+	resourceCloudShell      = "cloudshell"
+)
+
+// The View permission of each feature, by name.
+const (
+	permProjectView    = "project-view"
+	permAppView        = "app-view"
+	permEnvView        = "env-view"
+	permWorkflowView   = "workflow-view"
+	permDefinitionView = "definition-view"
+	permConfigView     = "config-view"
+	permPipelineView   = "pipeline-view"
+	permReportView     = "report-view"
+)
+
+// The Management permissions split from App Management, by name.
+const (
+	permWorkflowManagement   = "workflow-management"
+	permDefinitionManagement = "definition-management"
+)
+
+// defaultProjectPermissionTemplate are the permissions each project is given:
+// a View (list, detail) and a Management (everything) for each feature, and
+// Project View for the project itself, its members and roles.
+var defaultProjectPermissionTemplate = []*model.PermissionTemplate{
+	{
+		Name:      permProjectView,
+		Alias:     "Project View",
+		Resources: []string{"project:{projectName}", "project:{projectName}/role:*", "project:{projectName}/projectUser:*", "project:{projectName}/permission:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      permAppView,
+		Alias:     "App View",
+		Resources: []string{"project:{projectName}/application:*/*", "project:{projectName}/query:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      "app-management",
+		Alias:     "App Management",
+		Resources: []string{"project:{projectName}/application:*/*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      permEnvView,
+		Alias:     "Environment View",
+		Resources: []string{"project:{projectName}/environment:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      "env-management",
+		Alias:     "Environment Management",
+		Resources: []string{"project:{projectName}/environment:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      permWorkflowView,
+		Alias:     "Workflow View",
+		Resources: []string{"project:{projectName}/workflow:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      permWorkflowManagement,
+		Alias:     "Workflow Management",
+		Resources: []string{"project:{projectName}/workflow:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      permDefinitionView,
+		Alias:     "Definition View",
+		Resources: []string{"project:{projectName}/definition:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      permDefinitionManagement,
+		Alias:     "Definition Management",
+		Resources: []string{"project:{projectName}/definition:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      permConfigView,
+		Alias:     "Config View",
+		Resources: []string{"project:{projectName}/config:*", "project:{projectName}/provider:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      "config-management",
+		Alias:     "Config Management",
+		Resources: []string{"project:{projectName}/config:*", "project:{projectName}/provider:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      permPipelineView,
+		Alias:     "Pipeline View",
+		Resources: []string{"project:{projectName}/pipeline:*/*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      "pipeline-management",
+		Alias:     "Pipeline Management",
+		Resources: []string{"project:{projectName}/pipeline:*/*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      permReportView,
+		Alias:     "Report View",
+		Resources: []string{"project:{projectName}/report:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+	{
+		Name:      "role-management",
+		Alias:     "Role Management",
+		Resources: []string{"project:{projectName}/role:*", "project:{projectName}/projectUser:*", "project:{projectName}/permission:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopeProject,
+	},
+}
+
+var defaultPlatformPermission = []*model.PermissionTemplate{
+	{
+		Name:      "disable-cloudshell",
+		Alias:     "Disable CloudShell",
+		Resources: []string{resourceCloudShell},
+		Actions:   []string{"*"},
+		Effect:    "Deny",
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "cluster-management",
+		Alias:     "Cluster Management",
+		Resources: []string{"cluster:*/*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "project-management",
+		Alias:     "Project Management",
+		Resources: []string{"project:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "project-list",
+		Alias:     "Project List",
+		Resources: []string{"project:*"},
+		Actions:   []string{"list"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "addon-management",
+		Alias:     "Addon Management",
+		Resources: []string{"addon:*", "addonRegistry:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "target-management",
+		Alias:     "Target Management",
+		Resources: []string{"target:*", "cluster:*/namespace:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "user-management",
+		Alias:     "User Management",
+		Resources: []string{"user:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "role-management",
+		Alias:     "Platform Role Management",
+		Resources: []string{"role:*", "permission:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "config-management",
+		Alias:     "Config Management",
+		Resources: []string{"config:*/*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "cluster-view",
+		Alias:     "Cluster View",
+		Resources: []string{"cluster:*/*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "addon-view",
+		Alias:     "Addon View",
+		Resources: []string{"addon:*", "addonRegistry:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "target-view",
+		Alias:     "Target View",
+		Resources: []string{"target:*", "cluster:*/namespace:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "user-view",
+		Alias:     "User View",
+		Resources: []string{"user:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "role-view",
+		Alias:     "Role View",
+		Resources: []string{"role:*", "permission:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      permConfigView,
+		Alias:     "Config View",
+		Resources: []string{"config:*/*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "defkit-view",
+		Alias:     "DefKit View",
+		Resources: []string{"defkit:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "global-definition-view",
+		Alias:     "Global Definition View",
+		Resources: []string{"definition:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "global-definition-management",
+		Alias:     "Global Definition Management",
+		Resources: []string{"definition:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "global-workflow-management",
+		Alias:     "Global Workflow Management",
+		Resources: []string{"sharedWorkflow:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "defkit-management",
+		Alias:     "DefKit Management",
+		Resources: []string{"defkit:*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      "package-view",
+		Alias:     "Package View",
+		Resources: []string{"package:*"},
+		Actions:   []string{actionDetail, actionList},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+	{
+		Name:      AdminRole,
+		Alias:     "Admin",
+		Resources: []string{"*"},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+		Scope:     permissionScopePlatform,
+	},
+}
+
+// ResourceMaps all resources definition for RBAC
+var ResourceMaps = map[string]resourceMetadata{
+	"project": {
+		subResources: map[string]resourceMetadata{
+			"application": {
+				pathName: "appName",
+				subResources: map[string]resourceMetadata{
+					"component": {
+						subResources: map[string]resourceMetadata{
+							"trait": {
+								pathName: "traitType",
+							},
+						},
+						pathName: "compName",
+					},
+					"workflow": {
+						subResources: map[string]resourceMetadata{
+							"record": {
+								pathName: "record",
+							},
+						},
+						pathName: "workflowName",
+					},
+					"policy": {
+						pathName: "policyName",
+					},
+					"source": {
+						pathName: "sourceName",
+					},
+					"revision": {
+						pathName: "revision",
+					},
+					"envBinding": {
+						pathName: "envName",
+						subResources: map[string]resourceMetadata{
+							"record": {
+								pathName: "record",
+							},
+						},
+					},
+					"trigger": {},
+				},
+			},
+			"environment": {
+				pathName: "envName",
+			},
+			"workflow": {
+				pathName: "workflowName",
+			},
+			"definition": {
+				pathName: "definitionName",
+			},
+			"report": {
+				pathName: "reportID",
+			},
+			"query": {},
+			"role": {
+				pathName: "roleName",
+			},
+			"permission": {},
+			"projectUser": {
+				pathName: "userName",
+			},
+			"applicationTemplate": {},
+			"config": {
+				pathName: "configName",
+			},
+			"provider": {},
+			"pipeline": {
+				pathName: "pipelineName",
+				subResources: map[string]resourceMetadata{
+					"context": {
+						pathName: "contextName",
+					},
+					"pipelineRun": {
+						pathName: "pipelineRunName",
+					},
+				},
+			},
+		},
+		pathName: "projectName",
+	},
+	"cluster": {
+		pathName: "clusterName",
+		subResources: map[string]resourceMetadata{
+			"namespace": {},
+		},
+	},
+	"addon": {
+		pathName: "addonName",
+	},
+	"addonRegistry": {
+		pathName: "addonRegName",
+	},
+	"target": {
+		pathName: "targetName",
+	},
+	"user": {
+		pathName: "userName",
+	},
+	"role": {},
+	"permission": {
+		pathName: "permissionName",
+	},
+	"systemSetting": {},
+	"definition": {
+		pathName: "definitionName",
+	},
+	"sharedWorkflow": {
+		pathName: "workflowName",
+	},
+	"defkit": {
+		pathName: "name",
+	},
+	"package": {},
+	"configType": {
+		pathName: "configType",
+		subResources: map[string]resourceMetadata{
+			"config": {
+				pathName: "name",
+			},
+		},
+	},
+	resourceCloudShell: {},
+	"config":           {},
+	"configTemplate":   {},
+	"plugin":           {},
+	"managePlugin":     {},
+}
+
+var existResourcePaths = convertSources(ResourceMaps)
+
+type resourceMetadata struct {
+	subResources map[string]resourceMetadata
+	pathName     string
+}
+
+func checkResourcePath(resource string) (string, error) {
+	if sub, exist := ResourceMaps[resource]; exist {
+		if sub.pathName != "" {
+			return fmt.Sprintf("%s:{%s}", resource, sub.pathName), nil
+		}
+		return fmt.Sprintf("%s:*", resource), nil
+	}
+	path := ""
+	exist := 0
+	lastResourceName := resource[strings.LastIndex(resource, "/")+1:]
+	for key, erp := range existResourcePaths {
+		allMatchIndex := strings.Index(key, fmt.Sprintf("/%s/", resource))
+		index := strings.Index(erp, fmt.Sprintf("/%s:", lastResourceName))
+		if index > -1 && allMatchIndex > -1 {
+			pre := erp[:index+len(lastResourceName)+2]
+			next := strings.Replace(erp, pre, "", 1)
+			nameIndex := strings.Index(next, "/")
+			if nameIndex > -1 {
+				pre += next[:nameIndex]
+			}
+			if pre != path {
+				exist++
+			}
+			path = pre
+		}
+	}
+	path = strings.TrimSuffix(path, "/")
+	path = strings.TrimPrefix(path, "/")
+	if exist == 1 {
+		return path, nil
+	}
+	if exist > 1 {
+		return path, fmt.Errorf("the resource name %s is not unique", resource)
+	}
+	return path, fmt.Errorf("there is no resource %s", resource)
+}
+
+func convertSources(sources map[string]resourceMetadata) map[string]string {
+	list := make(map[string]string)
+	for k, v := range sources {
+		if len(v.subResources) > 0 {
+			for sub, subWithPathName := range convertSources(v.subResources) {
+				if subWithPathName != "" {
+					withPathname := fmt.Sprintf("/%s:*%s", k, subWithPathName)
+					if v.pathName != "" {
+						withPathname = fmt.Sprintf("/%s:{%s}%s", k, v.pathName, subWithPathName)
+					}
+					list[fmt.Sprintf("/%s%s", k, sub)] = withPathname
+				}
+			}
+		}
+		withPathname := fmt.Sprintf("/%s:*/", k)
+		if v.pathName != "" {
+			withPathname = fmt.Sprintf("/%s:{%s}/", k, v.pathName)
+		}
+		list[fmt.Sprintf("/%s/", k)] = withPathname
+	}
+	return list
+}
+
+func buildMap(resources []string, resourceNameMap map[string]string) map[string]resourceMetadata {
+	if len(resources) == 0 {
+		return nil
+	}
+	resourceName, exist := resourceNameMap[resources[0]]
+	if !exist {
+		resourceName = resources[0] + "Name"
+	}
+	return map[string]resourceMetadata{
+		resources[0]: {
+			pathName:     resourceName,
+			subResources: buildMap(resources[1:], resourceNameMap),
+		},
+	}
+}
+
+func mergeMap(source, target map[string]resourceMetadata) {
+	for k, v := range source {
+		if rm, exist := target[k]; exist {
+			if rm.subResources == nil {
+				rm.subResources = make(map[string]resourceMetadata)
+			}
+			mergeMap(source[k].subResources, rm.subResources)
+			rm.pathName = source[k].pathName
+			target[k] = rm
+		} else {
+			target[k] = v
+		}
+	}
+}
+
+// RegisterPluginResource register the allow resources to map
+// resource format like: cluster/node
+// resource map like: plugin: {pathName: "pluginID", subResources:{cluster: {pathName: "clusterName",subResources:{node:{pathName:"nodeName"}}}}}
+func RegisterPluginResource(resource string, resourceNameMap map[string]string) {
+	m := buildMap(strings.Split(resource, "/"), resourceNameMap)
+	sourceMap := map[string]resourceMetadata{
+		"plugin": {
+			pathName:     router.DefaultPluginResourceKey,
+			subResources: m,
+		},
+	}
+	if strings.HasPrefix(resource, defaultPluginResource) {
+		sourceMap = m
+	}
+	mergeMap(sourceMap, ResourceMaps)
+	existResourcePaths = convertSources(ResourceMaps)
+}
+
+// registerResourceAction register resource actions
+func registerResourceAction(resource string, actions ...string) {
+	lock.Lock()
+	defer lock.Unlock()
+	if resourceActions == nil {
+		resourceActions = make(map[string][]string)
+	}
+	path, err := checkResourcePath(resource)
+	if err != nil {
+		panic(fmt.Sprintf("resource %s is not exist", resource))
+	}
+	resource = path
+	if _, exist := resourceActions[resource]; exist {
+		for _, action := range actions {
+			if !slices.Contains(resourceActions[resource], action) {
+				resourceActions[resource] = append(resourceActions[resource], action)
+			}
+		}
+	} else {
+		resourceActions[resource] = actions
+	}
+}
+
+type rbacServiceImpl struct {
+	Store      datastore.DataStore `inject:"datastore"`
+	KubeClient client.Client       `inject:"kubeClient"`
+}
+
+// RBACService implement RBAC-related business logic.
+type RBACService interface {
+	CheckPerm(resource string, actions ...string) func(req *restful.Request, res *restful.Response, chain *restful.FilterChain)
+	CheckPluginRequestPerm(httpParams httprouter.Params, r2 *plugintypes.Route) func(req *http.Request, res http.ResponseWriter) bool
+	GetUserPermissions(ctx context.Context, user *model.User, projectName string, withPlatform bool) ([]*model.Permission, error)
+	CreateRole(ctx context.Context, projectName string, req apisv1.CreateRoleRequest) (*apisv1.RoleBase, error)
+	DeleteRole(ctx context.Context, projectName, roleName string) error
+	UpdateRole(ctx context.Context, projectName, roleName string, req apisv1.UpdateRoleRequest) (*apisv1.RoleBase, error)
+	ListRole(ctx context.Context, projectName string, page, pageSize int) (*apisv1.ListRolesResponse, error)
+	ListPermissionTemplate(ctx context.Context, projectName string) ([]apisv1.PermissionTemplateBase, error)
+	ListPermissions(ctx context.Context, projectName string) ([]apisv1.PermissionBase, error)
+	CreatePermission(ctx context.Context, projectName string, req apisv1.CreatePermissionRequest) (*apisv1.PermissionBase, error)
+	DeletePermission(ctx context.Context, projectName, permName string) error
+	SyncDefaultRoleAndUsersForProject(ctx context.Context, project *model.Project) error
+	Init(ctx context.Context) error
+}
+
+// NewRBACService is the service service of RBAC
+func NewRBACService() RBACService {
+	rbacService := &rbacServiceImpl{}
+	return rbacService
+}
+
+func (p *rbacServiceImpl) Init(ctx context.Context) error {
+	count, _ := p.Store.Count(ctx, &model.Permission{}, &datastore.FilterOptions{
+		IsNotExist: []datastore.IsNotExistQueryOption{
+			{
+				Key: keyProject,
+			},
+		},
+	})
+	if count == 0 {
+		var batchData []datastore.Entity
+		for _, policy := range defaultPlatformPermission {
+			batchData = append(batchData, &model.Permission{
+				Name:      policy.Name,
+				Alias:     policy.Alias,
+				Resources: policy.Resources,
+				Actions:   policy.Actions,
+				Effect:    policy.Effect,
+			})
+		}
+		batchData = append(batchData, &model.Role{
+			Name:        AdminRole,
+			Alias:       "Admin",
+			Permissions: []string{"admin"},
+		})
+		if err := p.Store.BatchAdd(ctx, batchData); err != nil {
+			return fmt.Errorf("init the platform perm policies failure %w", err)
+		}
+	}
+
+	if err := p.migratePermissions(ctx); err != nil {
+		return fmt.Errorf("failed to bring the default permissions up to date %w", err)
+	}
+
+	if err := managePrivilegesForAdminUser(ctx, p.KubeClient, AdminRole, false); err != nil {
+		return fmt.Errorf("failed to init the RBAC in cluster for the admin role %w", err)
+	}
+	return nil
+}
+
+// permissionMigrations bring existing installs' default permissions up to
+// date, each once, recorded by name: templates are copied into a project when
+// it is created, and the platform's at first start, so a template changed since
+// reaches neither otherwise. What a migration changed is the admins' after.
+var permissionMigrations = []struct {
+	name  string
+	apply func(context.Context, *rbacServiceImpl) error
+}{
+	{"2026-10-05-feature-permissions", migrateFeaturePermissions},
+	{"2026-10-05-feature-views", migrateFeatureViews},
+	{"2026-10-19-feature-management-grants", migrateFeatureManagementGrants},
+}
+
+// featureViews are the View templates migrateFeatureViews gives each project.
+var featureViews = []string{permAppView, permEnvView, permWorkflowView, permDefinitionView, permConfigView, permPipelineView, permReportView}
+
+// migrateFeatureViews gives each feature a View beside its Management. Each
+// project gains the View templates, and each of its roles holding Project
+// View gains them all before Project View narrows to the project itself, its
+// members and roles, so no one loses what they could read. The platform gains
+// the templates it lacks.
+func migrateFeatureViews(ctx context.Context, p *rbacServiceImpl) error {
+	narrowed := map[string][]string{}
+	for _, temp := range defaultProjectPermissionTemplate {
+		if temp.Name == permProjectView {
+			narrowed[permProjectView] = temp.Resources
+		}
+	}
+	all, err := p.Store.List(ctx, &model.Permission{}, nil)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for _, entity := range all {
+		perm := entity.(*model.Permission)
+		have[perm.Project+"/"+perm.Name] = true
+		if resources, ok := narrowed[perm.Name]; ok && perm.Project != "" {
+			formatted, _ := withProjectResources(nil, resources, perm.Project)
+			if !apiserverutils.EqualSlice(perm.Resources, formatted) {
+				perm.Resources = formatted
+				if err := p.Store.Put(ctx, perm); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	roles, err := p.Store.List(ctx, &model.Role{}, nil)
+	if err != nil {
+		return err
+	}
+	for _, entity := range roles {
+		role := entity.(*model.Role)
+		if role.Project == "" || !slices.Contains(role.Permissions, permProjectView) {
+			continue
+		}
+		changed := false
+		for _, view := range featureViews {
+			if !slices.Contains(role.Permissions, view) {
+				role.Permissions = append(role.Permissions, view)
+				changed = true
+			}
+		}
+		if changed {
+			if err := p.Store.Put(ctx, role); err != nil {
+				return err
+			}
+		}
+	}
+
+	projects, err := p.Store.List(ctx, &model.Project{}, nil)
+	if err != nil {
+		return err
+	}
+	var batch []datastore.Entity
+	for _, entity := range projects {
+		batch = append(batch, missingProjectPermissions(entity.(*model.Project).Name, featureViews, have)...)
+	}
+	batch = append(batch, missingPlatformPermissions(have)...)
+	if len(batch) == 0 {
+		return nil
+	}
+	return p.Store.BatchAdd(ctx, batch)
+}
+
+// missingProjectPermissions are the project templates named in names that the
+// project lacks, have holding "project/name" for each permission there is.
+func missingProjectPermissions(project string, names []string, have map[string]bool) []datastore.Entity {
+	var out []datastore.Entity
+	for _, temp := range defaultProjectPermissionTemplate {
+		if !slices.Contains(names, temp.Name) || have[project+"/"+temp.Name] {
+			continue
+		}
+		resources, _ := withProjectResources(nil, temp.Resources, project)
+		out = append(out, &model.Permission{Name: temp.Name, Alias: temp.Alias, Project: project, Resources: resources, Actions: temp.Actions, Effect: temp.Effect})
+	}
+	return out
+}
+
+// missingPlatformPermissions are the platform templates there is no
+// permission of the name of.
+func missingPlatformPermissions(have map[string]bool) []datastore.Entity {
+	var out []datastore.Entity
+	for _, temp := range defaultPlatformPermission {
+		if !have["/"+temp.Name] {
+			out = append(out, &model.Permission{Name: temp.Name, Alias: temp.Alias, Resources: temp.Resources, Actions: temp.Actions, Effect: temp.Effect})
+		}
+	}
+	return out
+}
+
+// migrateFeaturePermissions gives each feature its own permissions. Project
+// View reads workflows, definitions, reports and queries; workflow and
+// definition writes leave App Management for templates of their own, created
+// in each project; the platform gains the templates it lacks. The built-in
+// roles are given the new templates by migrateFeatureManagementGrants.
+func migrateFeaturePermissions(ctx context.Context, p *rbacServiceImpl) error {
+	add := map[string][]string{
+		permProjectView: {"project:{projectName}/workflow:*", "project:{projectName}/definition:*", "project:{projectName}/report:*", "project:{projectName}/query:*"},
+	}
+	remove := map[string][]string{
+		"app-management": {"project:{projectName}/workflow:*", "project:{projectName}/definition:*"},
+	}
+	created := []string{permWorkflowManagement, permDefinitionManagement}
+
+	all, err := p.Store.List(ctx, &model.Permission{}, nil)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for _, entity := range all {
+		perm := entity.(*model.Permission)
+		have[perm.Project+"/"+perm.Name] = true
+		if perm.Project == "" {
+			continue
+		}
+		resources, added := withProjectResources(perm.Resources, add[perm.Name], perm.Project)
+		resources, removed := withoutProjectResources(resources, remove[perm.Name], perm.Project)
+		if added || removed {
+			perm.Resources = resources
+			if err := p.Store.Put(ctx, perm); err != nil {
+				return err
+			}
+		}
+	}
+
+	projects, err := p.Store.List(ctx, &model.Project{}, nil)
+	if err != nil {
+		return err
+	}
+	var batch []datastore.Entity
+	for _, entity := range projects {
+		batch = append(batch, missingProjectPermissions(entity.(*model.Project).Name, created, have)...)
+	}
+	batch = append(batch, missingPlatformPermissions(have)...)
+	if len(batch) == 0 {
+		return nil
+	}
+	return p.Store.BatchAdd(ctx, batch)
+}
+
+// featureManagement are the templates migrateFeatureManagementGrants gives the
+// built-in roles named in builtinManagers.
+var featureManagement = []string{permWorkflowManagement, permDefinitionManagement}
+
+// builtinManagers are the built-in project roles a project created now gives
+// featureManagement.
+var builtinManagers = []string{"project-admin", "app-developer"}
+
+// migrateFeatureManagementGrants gives each project's built-in Project Admin
+// and App Developer the Workflow and Definition Management its project has and
+// they lack, as a project created now gives them. Custom roles are the
+// admins' to grant.
+func migrateFeatureManagementGrants(ctx context.Context, p *rbacServiceImpl) error {
+	all, err := p.Store.List(ctx, &model.Permission{}, nil)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for _, entity := range all {
+		perm := entity.(*model.Permission)
+		have[perm.Project+"/"+perm.Name] = true
+	}
+	roles, err := p.Store.List(ctx, &model.Role{}, nil)
+	if err != nil {
+		return err
+	}
+	for _, entity := range roles {
+		role := entity.(*model.Role)
+		if role.Project == "" || !slices.Contains(builtinManagers, role.Name) {
+			continue
+		}
+		changed := false
+		for _, name := range featureManagement {
+			// A role names only permissions its project has.
+			if have[role.Project+"/"+name] && !slices.Contains(role.Permissions, name) {
+				role.Permissions = append(role.Permissions, name)
+				changed = true
+			}
+		}
+		if changed {
+			if err := p.Store.Put(ctx, role); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// migratePermissions applies each permission migration not yet recorded.
+func (p *rbacServiceImpl) migratePermissions(ctx context.Context) error {
+	for _, m := range permissionMigrations {
+		done, err := p.Store.IsExist(ctx, &model.Migration{Name: m.name})
+		if err != nil {
+			return err
+		}
+		if done {
+			continue
+		}
+		if err := m.apply(ctx, p); err != nil {
+			return fmt.Errorf("%s: %w", m.name, err)
+		}
+		if err := p.Store.Add(ctx, &model.Migration{Name: m.name}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// withoutProjectResources is resources without each of removed, for the
+// project named projectName.
+func withoutProjectResources(resources, removed []string, projectName string) ([]string, bool) {
+	drop := map[string]bool{}
+	for _, r := range removed {
+		drop[projectResource(r, projectName)] = true
+	}
+	out := resources[:0:0]
+	for _, r := range resources {
+		if !drop[r] {
+			out = append(out, r)
+		}
+	}
+	return out, len(out) != len(resources)
+}
+
+// projectResource is resource with its project named.
+func projectResource(resource, projectName string) string {
+	var rra RequestResourceAction
+	rra.SetResourceWithName(resource, func(name string) string {
+		if name == ResourceMaps["project"].pathName {
+			return projectName
+		}
+		return ""
+	})
+	return rra.GetResource().String()
+}
+
+// withProjectResources is resources with each of added, for the project named
+// projectName, that it lacks.
+func withProjectResources(resources, added []string, projectName string) ([]string, bool) {
+	changed := false
+	for _, resource := range added {
+		formatted := projectResource(resource, projectName)
+		if !slices.Contains(resources, formatted) {
+			resources = append(resources, formatted)
+			changed = true
+		}
+	}
+	return resources, changed
+}
+
+// GetUserPermissions get user permission policies, if projectName is empty, will only get the platform permission policies
+func (p *rbacServiceImpl) GetUserPermissions(ctx context.Context, user *model.User, projectName string, withPlatform bool) ([]*model.Permission, error) {
+	var permissionNames []string
+	var perms []*model.Permission
+	if withPlatform && len(user.UserRoles) > 0 {
+		entities, err := p.Store.List(ctx, &model.Role{}, &datastore.ListOptions{FilterOptions: datastore.FilterOptions{
+			In: []datastore.InQueryOption{
+				{
+					Key:    keyName,
+					Values: user.UserRoles,
+				},
+			},
+			IsNotExist: []datastore.IsNotExistQueryOption{
+				{
+					Key: keyProject,
+				},
+			},
+		}})
+		if err != nil {
+			return nil, err
+		}
+		for _, entity := range entities {
+			permissionNames = append(permissionNames, entity.(*model.Role).Permissions...)
+		}
+		perms, err = p.listPermPolices(ctx, "", permissionNames)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if projectName != "" {
+		var projectUser = model.ProjectUser{
+			ProjectName: projectName,
+			Username:    user.Name,
+		}
+		var roles []string
+		if err := p.Store.Get(ctx, &projectUser); err == nil {
+			roles = append(roles, projectUser.UserRoles...)
+		}
+		if len(roles) > 0 {
+			entities, err := p.Store.List(ctx, &model.Role{Project: projectName}, &datastore.ListOptions{FilterOptions: datastore.FilterOptions{In: []datastore.InQueryOption{
+				{
+					Key:    keyName,
+					Values: roles,
+				},
+			}}})
+			if err != nil {
+				return nil, err
+			}
+			for _, entity := range entities {
+				permissionNames = append(permissionNames, entity.(*model.Role).Permissions...)
+			}
+			projectPerms, err := p.listPermPolices(ctx, projectName, permissionNames)
+			if err != nil {
+				return nil, err
+			}
+			perms = append(perms, projectPerms...)
+		}
+	}
+	// with the default permissions
+	perms = append(perms, &model.Permission{
+		Name:      "cloudshell",
+		Resources: []string{resourceCloudShell},
+		Actions:   []string{"*"},
+		Effect:    permissionAllow,
+	})
+	return perms, nil
+}
+
+func (p *rbacServiceImpl) UpdatePermission(ctx context.Context, projectName string, permissionName string, req *apisv1.UpdatePermissionRequest) (*apisv1.PermissionBase, error) {
+	perm := &model.Permission{
+		Project: projectName,
+		Name:    permissionName,
+	}
+	err := p.Store.Get(ctx, perm)
+	if err != nil {
+		if errors.Is(err, datastore.ErrRecordNotExist) {
+			return nil, bcode.ErrPermissionNotExist
+		}
+	}
+	//TODO: check req validate
+	perm.Actions = req.Actions
+	perm.Alias = req.Alias
+	perm.Resources = req.Resources
+	perm.Effect = req.Effect
+	if err := p.Store.Put(ctx, perm); err != nil {
+		return nil, err
+	}
+	return &apisv1.PermissionBase{
+		Name:       perm.Name,
+		Alias:      perm.Alias,
+		Resources:  perm.Resources,
+		Actions:    perm.Actions,
+		Effect:     perm.Effect,
+		CreateTime: perm.CreateTime,
+		UpdateTime: perm.UpdateTime,
+	}, nil
+}
+
+func (p *rbacServiceImpl) listPermPolices(ctx context.Context, projectName string, permissionNames []string) ([]*model.Permission, error) {
+	if len(permissionNames) == 0 {
+		return []*model.Permission{}, nil
+	}
+	filter := datastore.FilterOptions{In: []datastore.InQueryOption{
+		{
+			Key:    keyName,
+			Values: permissionNames,
+		},
+	}}
+	if projectName == "" {
+		filter.IsNotExist = append(filter.IsNotExist, datastore.IsNotExistQueryOption{
+			Key: keyProject,
+		})
+	}
+	permEntities, err := p.Store.List(ctx, &model.Permission{Project: projectName}, &datastore.ListOptions{FilterOptions: filter})
+	if err != nil {
+		return nil, err
+	}
+	var perms []*model.Permission
+	for _, entity := range permEntities {
+		perms = append(perms, entity.(*model.Permission))
+	}
+	return perms, nil
+}
+
+func (p *rbacServiceImpl) CheckPerm(resource string, actions ...string) func(req *restful.Request, res *restful.Response, chain *restful.FilterChain) {
+	registerResourceAction(resource, actions...)
+	f := func(req *restful.Request, res *restful.Response, chain *restful.FilterChain) {
+		// get login user info
+		userName, ok := req.Request.Context().Value(&apisv1.CtxKeyUser).(string)
+		if !ok {
+			bcode.ReturnError(req, res, bcode.ErrUnauthorized)
+			return
+		}
+		user := &model.User{Name: userName}
+		if err := p.Store.Get(req.Request.Context(), user); err != nil {
+			bcode.ReturnError(req, res, bcode.ErrUnauthorized)
+			return
+		}
+		path, err := checkResourcePath(resource)
+		if err != nil {
+			klog.Errorf("check resource path failure %s", err.Error())
+			bcode.ReturnError(req, res, bcode.ErrForbidden)
+			return
+		}
+
+		// multiple method for get the project name.
+		getProjectName := func() string {
+			if value := req.PathParameter("projectName"); value != "" {
+				return value
+			}
+			if value := req.QueryParameter("project"); value != "" {
+				return value
+			}
+			if value := req.QueryParameter("projectName"); value != "" {
+				return value
+			}
+			if appName := req.PathParameter(ResourceMaps["project"].subResources["application"].pathName); appName != "" {
+				app := &model.Application{Name: appName}
+				if err := p.Store.Get(req.Request.Context(), app); err == nil {
+					return app.Project
+				}
+			}
+			if envName := req.PathParameter(ResourceMaps["project"].subResources["environment"].pathName); envName != "" {
+				env := &model.Env{Name: envName}
+				if err := p.Store.Get(req.Request.Context(), env); err == nil {
+					return env.Project
+				}
+			}
+			return ""
+		}
+
+		ra := &RequestResourceAction{}
+		ra.SetResourceWithName(path, func(name string) string {
+			if name == ResourceMaps["project"].pathName {
+				return getProjectName()
+			}
+			return req.PathParameter(name)
+		})
+		ra.SetActions(actions)
+
+		// get user's perm list.
+		projectName := getProjectName()
+		permissions, err := p.GetUserPermissions(req.Request.Context(), user, projectName, true)
+		if err != nil {
+			klog.Errorf("get user's perm policies failure %s, user is %s", err.Error(), user.Name)
+			bcode.ReturnError(req, res, bcode.ErrForbidden)
+			return
+		}
+		if !ra.Match(permissions) {
+			bcode.ReturnError(req, res, bcode.ErrForbidden)
+			return
+		}
+
+		apiserverutils.SetUsernameAndProjectInRequestContext(req.Request, userName, projectName, user.UserRoles)
+		chain.ProcessFilter(req, res)
+	}
+	return f
+}
+
+// CheckPluginRequestPerm handle RBAC checking for the http request to plugin backend
+// pathFormat: eg. nodes/{node}/status
+func (p *rbacServiceImpl) CheckPluginRequestPerm(httpParams httprouter.Params, r2 *plugintypes.Route) func(req *http.Request, res http.ResponseWriter) bool {
+	// request plugin:* by default?
+	var resource = path.Join(defaultPluginResource, func() string {
+		if r2 == nil || r2.Permission == nil {
+			return ""
+		}
+		return r2.Permission.Resource
+	}())
+	var action = func() string {
+		if r2 == nil || r2.Permission == nil {
+			return "*"
+		}
+		return r2.Permission.Action
+	}()
+	// Set the plugin resource key
+	if r2.ResourceMap == nil {
+		r2.ResourceMap = map[string]string{}
+	}
+	r2.ResourceMap[defaultPluginResource] = router.DefaultPluginResourceKey
+
+	RegisterPluginResource(resource, r2.ResourceMap)
+	if action != "*" {
+		registerResourceAction(resource, action)
+	}
+
+	f := func(req *http.Request, res http.ResponseWriter) bool {
+		if httpParams == nil {
+			return false
+		}
+		actions := []string{action}
+		pathParameter := func(name string) string {
+			return httpParams.ByName(name)
+		}
+		// get login user info
+		userName, ok := req.Context().Value(&apisv1.CtxKeyUser).(string)
+		if !ok {
+			bcode.ReturnHTTPError(req, res, bcode.ErrUnauthorized)
+			return false
+		}
+		user := &model.User{Name: userName}
+		if err := p.Store.Get(req.Context(), user); err != nil {
+			bcode.ReturnHTTPError(req, res, bcode.ErrUnauthorized)
+			return false
+		}
+		// resource: plugin/cluster/node
+		// path: plugin:p1/cluster:cluster1/node:node1
+		path, err := checkResourcePath(resource)
+		if err != nil {
+			klog.Errorf("check resource path failure %s", err.Error())
+			bcode.ReturnHTTPError(req, res, bcode.ErrForbidden)
+			return false
+		}
+
+		// multiple method for get the project name.
+		getProjectName := func() string {
+			if value := pathParameter("projectName"); value != "" {
+				return value
+			}
+			return ""
+		}
+
+		ra := &RequestResourceAction{}
+		ra.SetResourceWithName(path, func(name string) string {
+			if name == ResourceMaps["project"].pathName {
+				return getProjectName()
+			}
+			return pathParameter(name)
+		})
+		ra.SetActions(actions)
+
+		// get user's perm list.
+		projectName := getProjectName()
+		permissions, err := p.GetUserPermissions(req.Context(), user, projectName, true)
+		if err != nil {
+			klog.Errorf("get user's perm policies failure %s, user is %s", err.Error(), user.Name)
+			bcode.ReturnHTTPError(req, res, bcode.ErrForbidden)
+			return false
+		}
+
+		if !ra.Match(permissions) {
+			bcode.ReturnHTTPError(req, res, bcode.ErrForbidden)
+			return false
+		}
+		apiserverutils.SetUsernameAndProjectInRequestContext(req, userName, projectName, user.UserRoles)
+		return true
+	}
+	return f
+}
+
+func (p *rbacServiceImpl) CreateRole(ctx context.Context, projectName string, req apisv1.CreateRoleRequest) (*apisv1.RoleBase, error) {
+	if projectName != "" {
+		var project = model.Project{
+			Name: projectName,
+		}
+		if err := p.Store.Get(ctx, &project); err != nil {
+			return nil, bcode.ErrProjectIsNotExist
+		}
+	}
+	if len(req.Permissions) == 0 {
+		return nil, bcode.ErrRolePermissionCheckFailure
+	}
+	policies, err := p.listPermPolices(ctx, projectName, req.Permissions)
+	if err != nil || len(policies) != len(req.Permissions) {
+		return nil, bcode.ErrRolePermissionCheckFailure
+	}
+	var role = model.Role{
+		Name:        req.Name,
+		Alias:       req.Alias,
+		Project:     projectName,
+		Permissions: req.Permissions,
+	}
+	if err := p.Store.Add(ctx, &role); err != nil {
+		if errors.Is(err, datastore.ErrRecordExist) {
+			return nil, bcode.ErrRoleIsExist
+		}
+		return nil, err
+	}
+	return assembler.ConvertRole2DTO(&role, policies), nil
+}
+
+func (p *rbacServiceImpl) DeleteRole(ctx context.Context, projectName, roleName string) error {
+	var role = model.Role{
+		Name:    roleName,
+		Project: projectName,
+	}
+	if err := p.Store.Delete(ctx, &role); err != nil {
+		if errors.Is(err, datastore.ErrRecordNotExist) {
+			return bcode.ErrRoleIsNotExist
+		}
+		return err
+	}
+	return nil
+}
+
+func (p *rbacServiceImpl) DeletePermission(ctx context.Context, projectName, permName string) error {
+	roles, _, err := repository.ListRoles(ctx, p.Store, projectName, 0, 0)
+	if err != nil {
+		klog.Errorf("fail to list the roles: %s", err.Error())
+		return bcode.ErrPermissionIsUsed
+	}
+	for _, role := range roles {
+		for _, p := range role.Permissions {
+			if p == permName {
+				return bcode.ErrPermissionIsUsed
+			}
+		}
+	}
+
+	var perm = model.Permission{
+		Name:    permName,
+		Project: projectName,
+	}
+	if err := p.Store.Delete(ctx, &perm); err != nil {
+		if errors.Is(err, datastore.ErrRecordNotExist) {
+			return bcode.ErrRoleIsNotExist
+		}
+		return err
+	}
+	return nil
+}
+
+func (p *rbacServiceImpl) UpdateRole(ctx context.Context, projectName, roleName string, req apisv1.UpdateRoleRequest) (*apisv1.RoleBase, error) {
+	if projectName != "" {
+		var project = model.Project{
+			Name: projectName,
+		}
+		if err := p.Store.Get(ctx, &project); err != nil {
+			return nil, bcode.ErrProjectIsNotExist
+		}
+	}
+	if len(req.Permissions) == 0 {
+		return nil, bcode.ErrRolePermissionCheckFailure
+	}
+	policies, err := p.listPermPolices(ctx, projectName, req.Permissions)
+	if err != nil || len(policies) != len(req.Permissions) {
+		return nil, bcode.ErrRolePermissionCheckFailure
+	}
+	var role = model.Role{
+		Name:    roleName,
+		Project: projectName,
+	}
+	if err := p.Store.Get(ctx, &role); err != nil {
+		if errors.Is(err, datastore.ErrRecordNotExist) {
+			return nil, bcode.ErrRoleIsNotExist
+		}
+		return nil, err
+	}
+	role.Alias = req.Alias
+	role.Permissions = req.Permissions
+	if err := p.Store.Put(ctx, &role); err != nil {
+		return nil, err
+	}
+	return assembler.ConvertRole2DTO(&role, policies), nil
+}
+
+func (p *rbacServiceImpl) ListRole(ctx context.Context, projectName string, _, _ int) (*apisv1.ListRolesResponse, error) {
+	roles, count, err := repository.ListRoles(ctx, p.Store, projectName, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	var policySet = make(map[string]string)
+	for _, role := range roles {
+		for _, p := range role.Permissions {
+			policySet[p] = p
+		}
+	}
+
+	policies, err := p.listPermPolices(ctx, projectName, apiserverutils.MapKey2Array(policySet))
+	if err != nil {
+		klog.Errorf("list perm policies failure %s", err.Error())
+	}
+	var policyMap = make(map[string]*model.Permission)
+	for i, policy := range policies {
+		policyMap[policy.Name] = policies[i]
+	}
+	var res apisv1.ListRolesResponse
+	for _, role := range roles {
+		var rolePolicies []*model.Permission
+		for _, perm := range role.Permissions {
+			rolePolicies = append(rolePolicies, policyMap[perm])
+		}
+		res.Roles = append(res.Roles, assembler.ConvertRole2DTO(role, rolePolicies))
+	}
+	res.Total = count
+	return &res, nil
+}
+
+// ListPermissionTemplate TODO:
+func (p *rbacServiceImpl) ListPermissionTemplate(_ context.Context, _ string) ([]apisv1.PermissionTemplateBase, error) {
+	return nil, nil
+}
+
+func (p *rbacServiceImpl) ListPermissions(ctx context.Context, projectName string) ([]apisv1.PermissionBase, error) {
+	var filter datastore.FilterOptions
+	if projectName == "" {
+		filter.IsNotExist = append(filter.IsNotExist, datastore.IsNotExistQueryOption{
+			Key: keyProject,
+		})
+	}
+	permEntities, err := p.Store.List(ctx, &model.Permission{Project: projectName}, &datastore.ListOptions{FilterOptions: filter})
+	if err != nil {
+		return nil, err
+	}
+	var perms []apisv1.PermissionBase
+	for _, entity := range permEntities {
+		perm := entity.(*model.Permission)
+		perms = append(perms, apisv1.PermissionBase{
+			Name:       perm.Name,
+			Alias:      perm.Alias,
+			Resources:  perm.Resources,
+			Actions:    perm.Actions,
+			Effect:     perm.Effect,
+			CreateTime: perm.CreateTime,
+			UpdateTime: perm.UpdateTime,
+		})
+	}
+	return perms, nil
+}
+
+func (p *rbacServiceImpl) CreatePermission(ctx context.Context, projectName string, req apisv1.CreatePermissionRequest) (*apisv1.PermissionBase, error) {
+	if projectName != "" {
+		var project = model.Project{
+			Name: projectName,
+		}
+		if err := p.Store.Get(ctx, &project); err != nil {
+			return nil, bcode.ErrProjectIsNotExist
+		}
+	}
+	if len(req.Resources) == 0 {
+		return nil, bcode.ErrRolePermissionCheckFailure
+	}
+
+	if len(req.Actions) == 0 {
+		req.Actions = []string{"*"}
+	}
+
+	if req.Effect == "" {
+		req.Effect = permissionAllow
+	}
+
+	var permission = model.Permission{
+		Name:      req.Name,
+		Alias:     req.Alias,
+		Project:   projectName,
+		Resources: req.Resources,
+		Actions:   req.Actions,
+		Effect:    req.Effect,
+	}
+
+	if err := p.Store.Add(ctx, &permission); err != nil {
+		if errors.Is(err, datastore.ErrRecordExist) {
+			return nil, bcode.ErrPermissionIsExist
+		}
+		return nil, err
+	}
+	return assembler.ConvertPermission2DTO(&permission), nil
+}
+
+func (p *rbacServiceImpl) SyncDefaultRoleAndUsersForProject(ctx context.Context, project *model.Project) error {
+
+	permissions, err := p.ListPermissions(ctx, project.Name)
+	if err != nil {
+		return err
+	}
+	var permissionMap = map[string]apisv1.PermissionBase{}
+	for i, per := range permissions {
+		permissionMap[per.Name] = permissions[i]
+	}
+
+	var batchData []datastore.Entity
+	for _, permissionTemp := range defaultProjectPermissionTemplate {
+		var rra = RequestResourceAction{}
+		var formattedResource []string
+		for _, resource := range permissionTemp.Resources {
+			rra.SetResourceWithName(resource, func(name string) string {
+				if name == ResourceMaps["project"].pathName {
+					return project.Name
+				}
+				return ""
+			})
+			formattedResource = append(formattedResource, rra.GetResource().String())
+		}
+		permission := &model.Permission{
+			Name:      permissionTemp.Name,
+			Alias:     permissionTemp.Alias,
+			Project:   project.Name,
+			Resources: formattedResource,
+			Actions:   permissionTemp.Actions,
+			Effect:    permissionTemp.Effect,
+		}
+		if perm, exist := permissionMap[permissionTemp.Name]; exist {
+			if !apiserverutils.EqualSlice(perm.Resources, permissionTemp.Resources) || apiserverutils.EqualSlice(perm.Actions, permissionTemp.Actions) {
+				if err := p.Store.Put(ctx, permission); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		batchData = append(batchData, permission)
+	}
+
+	if len(permissions) == 0 {
+		batchData = append(batchData, &model.Role{
+			Name:        "app-developer",
+			Alias:       "App Developer",
+			Permissions: []string{permProjectView, permAppView, permEnvView, permWorkflowView, permDefinitionView, permConfigView, permPipelineView, permReportView, "app-management", permWorkflowManagement, permDefinitionManagement, "env-management", "config-management", "pipeline-management"},
+			Project:     project.Name,
+		}, &model.Role{
+			Name:        "project-admin",
+			Alias:       "Project Admin",
+			Permissions: []string{permProjectView, permAppView, permEnvView, permWorkflowView, permDefinitionView, permConfigView, permPipelineView, permReportView, "app-management", permWorkflowManagement, permDefinitionManagement, "env-management", "config-management", "pipeline-management", "role-management"},
+			Project:     project.Name,
+		}, &model.Role{
+			Name:        "project-viewer",
+			Alias:       "Project Viewer",
+			Permissions: []string{permProjectView, permAppView, permEnvView, permWorkflowView, permDefinitionView, permConfigView, permPipelineView, permReportView},
+			Project:     project.Name,
+		})
+		if project.Owner != "" {
+			var projectUser = &model.ProjectUser{
+				ProjectName: project.Name,
+				UserRoles:   []string{"project-admin"},
+				Username:    project.Owner,
+			}
+			batchData = append(batchData, projectUser)
+		}
+	}
+
+	return p.Store.BatchAdd(ctx, batchData)
+}
+
+// ResourceName it is similar to ARNs
+// <type>:<value>/<type>:<value>
+type ResourceName struct {
+	Type  string
+	Value string
+	Next  *ResourceName
+}
+
+// ParseResourceName parse string to ResourceName
+func ParseResourceName(resource string) *ResourceName {
+	RNs := strings.Split(resource, "/")
+	var resourceName = ResourceName{}
+	var current = &resourceName
+	for _, rn := range RNs {
+		rnData := strings.Split(rn, ":")
+		if len(rnData) == 2 {
+			current.Type = rnData[0]
+			current.Value = rnData[1]
+		}
+		if len(rnData) == 1 {
+			current.Type = rnData[0]
+			current.Value = "*"
+		}
+		var next = &ResourceName{}
+		current.Next = next
+		current = next
+	}
+	return &resourceName
+}
+
+// Match the resource types same with target and resource value include
+// target resource means request resources
+func (r *ResourceName) Match(target *ResourceName) bool {
+	current := r
+	currentTarget := target
+	for current != nil && current.Type != "" {
+		if current.Type == "*" {
+			return true
+		}
+		if currentTarget == nil || currentTarget.Type == "" {
+			return false
+		}
+		if current.Type != currentTarget.Type {
+			return false
+		}
+		if current.Value != currentTarget.Value && current.Value != "*" {
+			return false
+		}
+		current = current.Next
+		currentTarget = currentTarget.Next
+	}
+	if currentTarget != nil && currentTarget.Type != "" {
+		return false
+	}
+	return true
+}
+
+func (r *ResourceName) String() string {
+	strBuilder := &strings.Builder{}
+	current := r
+	for current != nil && current.Type != "" {
+		fmt.Fprintf(strBuilder, "%s:%s/", current.Type, current.Value)
+		current = current.Next
+	}
+	return strings.TrimSuffix(strBuilder.String(), "/")
+}
+
+// RequestResourceAction resource permission boundary
+type RequestResourceAction struct {
+	resource *ResourceName
+	actions  []string
+}
+
+// SetResourceWithName format resource and assign a value from path parameter
+func (r *RequestResourceAction) SetResourceWithName(resource string, pathParameter func(name string) string) {
+	resultKey := reg.FindAllString(resource, -1)
+	for _, sourcekey := range resultKey {
+		key := sourcekey[1 : len(sourcekey)-1]
+		value := pathParameter(key)
+		if value == "" {
+			value = "*"
+		}
+		resource = strings.Replace(resource, sourcekey, value, 1)
+	}
+	r.resource = ParseResourceName(resource)
+}
+
+// GetResource return the resource after be formated
+func (r *RequestResourceAction) GetResource() *ResourceName {
+	return r.resource
+}
+
+// SetActions set request actions
+func (r *RequestResourceAction) SetActions(actions []string) {
+	r.actions = actions
+}
+
+func (r *RequestResourceAction) match(policy *model.Permission) bool {
+	// match actions, the policy actions will include the actions of request
+	if !apiserverutils.SliceIncludeSlice(policy.Actions, r.actions) && !slices.Contains(policy.Actions, "*") {
+		return false
+	}
+	// match resources
+	for _, resource := range policy.Resources {
+		resourceName := ParseResourceName(resource)
+		if resourceName.Match(r.resource) {
+			return true
+		}
+	}
+	return false
+}
+
+// Match determines whether the request resources and actions matches the user permission set.
+func (r *RequestResourceAction) Match(policies []*model.Permission) bool {
+	for _, policy := range policies {
+		if strings.EqualFold(policy.Effect, "deny") {
+			if r.match(policy) {
+				return false
+			}
+		}
+	}
+	for _, policy := range policies {
+		if strings.EqualFold(policy.Effect, "allow") || policy.Effect == "" {
+			if r.match(policy) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// managePrivilegesForAdminUser grant or revoke privileges for admin user
+func managePrivilegesForAdminUser(ctx context.Context, cli client.Client, roleName string, revoke bool) error {
+	p := &auth.ScopedPrivilege{Cluster: types.ClusterLocalName}
+	identity := &auth.Identity{Groups: []string{apiserverutils.KubeVelaAdminGroupPrefix + roleName}}
+	writer := &bytes.Buffer{}
+	f, msg := auth.GrantPrivileges, grantMsg
+	if revoke {
+		f, msg = auth.RevokePrivileges, revokeMsg
+	}
+	if err := f(ctx, cli, []auth.PrivilegeDescription{p}, identity, writer); err != nil {
+		return err
+	}
+	klog.Infof("%s: %s", msg, writer.String())
+	return nil
+}

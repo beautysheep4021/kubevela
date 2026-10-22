@@ -1,0 +1,247 @@
+// The top bar holds the brand, the search, the project every view is scoped
+// to, the tools and the user, in the console's dark band.
+
+.console-topnav {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  flex: none;
+  gap: 4px;
+  align-items: center;
+  height: 48px;
+  padding: 0 12px 0 16px;
+  color: var(--c-topnav-text);
+  font-family: var(--font);
+  background: var(--c-topnav);
+}
+
+.topnav-brand {
+  display: flex;
+  align-items: center;
+  width: 196px;
+  img {
+    max-width: 150px;
+    max-height: 26px;
+    object-fit: contain;
+  }
+  .topnav-logo-plate {
+    padding: 3px 8px;
+    background: #fff;
+    border-radius: 4px;
+  }
+}
+
+.topnav-home,
+.topnav-tool {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
+  color: var(--c-topnav-text) !important;
+  font-size: 13px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  &:hover {
+    color: #fff !important;
+    background: var(--c-topnav-hover);
+  }
+}
+
+.topnav-search {
+  display: flex;
+  flex: 1;
+  justify-content: flex-start;
+  min-width: 0;
+  margin-left: 12px;
+  .quick-search-trigger {
+    flex: 0 1 420px;
+    min-width: 220px;
+    height: 32px;
+    color: #9aa5b4;
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.12);
+    border-radius: var(--radius);
+    kbd {
+      color: #9aa5b4;
+      background: transparent;
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+    &:hover {
+      background: rgba(255, 255, 255, 0.14);
+      border-color: rgba(255, 255, 255, 0.24);
+    }
+  }
+}
+
+.topnav-end {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  .next-select.project-picker {
+    width: 200px;
+    margin-right: 8px;
+    .next-select-inner {
+      height: 32px;
+      background: rgba(255, 255, 255, 0.08) !important;
+      border-color: rgba(255, 255, 255, 0.12) !important;
+      border-radius: var(--radius);
+      &:hover {
+        background: rgba(255, 255, 255, 0.14) !important;
+      }
+    }
+    .project-picker-icon,
+    .next-select-arrow,
+    .next-icon {
+      color: #9aa5b4;
+    }
+    .next-select-values,
+    .next-select-values em {
+      color: #fff;
+      font-weight: 500;
+      font-size: 13px;
+      line-height: 30px;
+    }
+  }
+}
+
+.topnav-language > * {
+  display: inline-flex;
+}
+
+.topnav-user {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  height: 32px;
+  margin-left: 4px;
+  padding: 0 8px;
+  color: #fff;
+  font-size: 13px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  &:hover {
+    background: var(--c-topnav-hover);
+  }
+}
+
+.topnav-avatar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+  background: var(--c-primary);
+  border-radius: 50%;
+}
+
+.topnav-user-name {
+  max-width: 120px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+// The user's menu, opened by hovering their name at the end of the top bar.
+.user-flyout {
+  width: 240px;
+  padding: 6px;
+  font-family: var(--font);
+  background: #fff;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  .topnav-avatar {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+.user-flyout-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 4px;
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--c-divider);
+}
+
+.user-flyout-name {
+  color: var(--c-text);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.user-flyout-sub {
+  color: var(--c-text-3);
+  font-size: 12px;
+}
+
+.user-flyout-item {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  color: var(--c-text-2) !important;
+  font-size: 13px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  svg {
+    flex: none;
+    color: var(--c-text-3);
+  }
+  &:hover,
+  &.active {
+    color: var(--c-text) !important;
+    background: var(--c-hover);
+  }
+}
+
+.user-flyout-section {
+  padding: 6px 10px 4px;
+  color: var(--c-text-3);
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.user-flyout-divider {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--c-border);
+}
+
+.user-flyout-logout {
+  color: var(--c-danger) !important;
+  svg {
+    color: var(--c-danger);
+  }
+  &:hover {
+    background: #fff1f0;
+  }
+}
+
+// A branded console still credits KubeVela, small in the bottom-right corner.
+.powered-by {
+  position: fixed;
+  right: 16px;
+  bottom: 12px;
+  z-index: 10;
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  padding: 3px 8px;
+  color: var(--c-text-3) !important;
+  font-size: 11px;
+  line-height: 16px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  img {
+    width: 14px;
+    height: 14px;
+  }
+}

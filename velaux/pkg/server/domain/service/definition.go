@@ -1,0 +1,821 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/kubevela/pkg/util/stringtools"
+
+	"github.com/oam-dev/kubevela/pkg/appfile"
+	"github.com/oam-dev/kubevela/pkg/definition/nsrestrict"
+	"github.com/oam-dev/kubevela/pkg/utils/addon"
+	"github.com/oam-dev/kubevela/pkg/utils/filters"
+	"github.com/oam-dev/kubevela/pkg/utils/schema"
+
+	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/pkg/errors"
+	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/kubevela/pkg/util/slices"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/apis/types"
+
+	"github.com/kubevela/velaux/pkg/server/infrastructure/datastore"
+	apisv1 "github.com/kubevela/velaux/pkg/server/interfaces/api/dto/v1"
+	"github.com/kubevela/velaux/pkg/server/utils/bcode"
+)
+
+// The scopes policyScope names.
+const (
+	policyScopeBuiltin     = "Builtin"
+	policyScopeApplication = "Application"
+	policyScopeWorkload    = "Workload"
+)
+
+// DefinitionService definition service, Implement the management of ComponentDefinition、TraitDefinition and WorkflowStepDefinition.
+type DefinitionService interface {
+	// ListDefinitions list definition base info
+	ListDefinitions(ctx context.Context, ops DefinitionQueryOption) ([]*apisv1.DefinitionBase, error)
+	// DefinitionCUE is a definition as CUE, as vela def get writes it.
+	DefinitionCUE(ctx context.Context, name, defType string) (*apisv1.DefinitionCUEResponse, error)
+	// DefinitionDoc is a definition's reference documentation in Markdown.
+	DefinitionDoc(ctx context.Context, name, defType, lang string) (*apisv1.DefinitionDocResponse, error)
+	// DetailDefinition get definition detail
+	DetailDefinition(ctx context.Context, name, defType string) (*apisv1.DetailDefinitionResponse, error)
+	// DetailDefinitionAt is a definition's detail at one of its versions, as
+	// ListDefinitionRevisions names them; no version is the latest.
+	DetailDefinitionAt(ctx context.Context, name, defType, version string) (*apisv1.DetailDefinitionResponse, error)
+	// ListDefinitionRevisions lists a definition's revisions, newest first.
+	ListDefinitionRevisions(ctx context.Context, name, defType string) ([]apisv1.DefinitionRevision, error)
+	// DefinitionUsage reports each namespace's use of a component or trait definition against its quota
+	DefinitionUsage(ctx context.Context, name, defType string) (*apisv1.DefinitionUsageResponse, error)
+	// AddDefinitionUISchema add or update custom definition ui schema
+	AddDefinitionUISchema(ctx context.Context, name, defType string, schema []*schema.UIParameter) ([]*schema.UIParameter, error)
+	// UpdateDefinitionStatus update the status of definition
+	UpdateDefinitionStatus(ctx context.Context, name string, status apisv1.UpdateDefinitionStatusRequest) (*apisv1.DetailDefinitionResponse, error)
+}
+
+// DefinitionHidden means the definition can not be used in VelaUX
+const DefinitionHidden = "true"
+
+type definitionServiceImpl struct {
+	Store      datastore.DataStore `inject:"datastore"`
+	KubeClient client.Client       `inject:"kubeClient"`
+	// ServerKubeClient reads with VelaUX's own identity, not the user's.
+	ServerKubeClient client.Client `inject:"serverKubeClient"`
+}
+
+// DefinitionQueryOption define a set of query options
+type DefinitionQueryOption struct {
+	Type             string `json:"type"`
+	AppliedWorkloads string `json:"appliedWorkloads"`
+	OwnerAddon       string `json:"sourceAddon"`
+	QueryAll         bool   `json:"queryAll"`
+	Scope            string `json:"scope"`
+	// Namespaces are the namespaces to report each definition's usability in.
+	Namespaces []string `json:"namespaces"`
+	// Project adds the project's own definitions, from its namespace, to the
+	// global ones; empty lists the global ones alone.
+	Project string `json:"project"`
+}
+
+// String return cache key string
+func (d DefinitionQueryOption) String() string {
+	return fmt.Sprintf("type:%s/appliedWorkloads:%s/ownerAddon:%s/queryAll:%v/namespaces:%s", d.Type, d.AppliedWorkloads, d.OwnerAddon, d.QueryAll, strings.Join(d.Namespaces, ","))
+}
+
+const (
+	definitionAPIVersion       = "core.oam.dev/v1beta1"
+	kindComponentDefinition    = "ComponentDefinition"
+	kindTraitDefinition        = "TraitDefinition"
+	kindWorkflowStepDefinition = "WorkflowStepDefinition"
+	kindPolicyDefinition       = "PolicyDefinition"
+	kindSourceDefinition       = "SourceDefinition"
+
+	// definitionTypeSource is the type name VelaUX's API gives a SourceDefinition.
+	definitionTypeSource = "source"
+
+	// LabelDefinitionScope is the label key for definition scope, with this key, we know if the definition is for Application or WorkflowRun
+	LabelDefinitionScope = "custom.definition.oam.dev/scope"
+)
+
+// NewDefinitionService new definition service
+func NewDefinitionService() DefinitionService {
+	return &definitionServiceImpl{}
+}
+
+func (d *definitionServiceImpl) ListDefinitions(ctx context.Context, ops DefinitionQueryOption) ([]*apisv1.DefinitionBase, error) {
+	defs := &unstructured.UnstructuredList{}
+	version, kind, err := getKindAndVersion(ops.Type)
+	if err != nil {
+		return nil, err
+	}
+	defs.SetAPIVersion(version)
+	defs.SetKind(kind)
+	return d.listDefinitions(ctx, defs, kind, ops)
+}
+
+func (d *definitionServiceImpl) listDefinitions(ctx context.Context, list *unstructured.UnstructuredList, kind string, ops DefinitionQueryOption) ([]*apisv1.DefinitionBase, error) {
+	matchLabels := metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{
+				Key:      types.LabelDefinitionDeprecated,
+				Operator: metav1.LabelSelectorOpDoesNotExist,
+			},
+		},
+	}
+	if ops.Scope != "" {
+		var filterScope string
+		if ops.Scope == "Application" {
+			filterScope = "WorkflowRun"
+		} else {
+			filterScope = "Application"
+		}
+		matchLabels.MatchExpressions = append(matchLabels.MatchExpressions, metav1.LabelSelectorRequirement{
+			Key:      LabelDefinitionScope,
+			Operator: metav1.LabelSelectorOpNotIn,
+			Values:   []string{filterScope},
+		})
+	}
+	if !ops.QueryAll {
+		matchLabels.MatchExpressions = append(matchLabels.MatchExpressions, metav1.LabelSelectorRequirement{
+			Key:      types.LabelDefinitionHidden,
+			Operator: metav1.LabelSelectorOpDoesNotExist,
+		})
+	}
+	selector, err := metav1.LabelSelectorAsSelector(&matchLabels)
+	if err != nil {
+		return nil, err
+	}
+	global, err := d.listIn(ctx, d.KubeClient, list.DeepCopy(), kind, types.DefaultKubeVelaNS, selector, ops)
+	if err != nil {
+		return nil, err
+	}
+	var defs []*apisv1.DefinitionBase
+	if ops.Project == "" {
+		for _, def := range global {
+			def.Namespace, def.Scope = types.DefaultKubeVelaNS, definitionScopeGlobal
+		}
+		defs = global
+	} else {
+		namespace, err := projectNamespace(ctx, d.Store, ops.Project)
+		if err != nil {
+			return nil, err
+		}
+		project, err := d.listIn(ctx, d.ServerKubeClient, list.DeepCopy(), kind, namespace, selector, ops)
+		if err != nil {
+			return nil, err
+		}
+		defs = withProjectDefinitions(project, global, namespace, ops.Namespaces, ops.QueryAll)
+	}
+	if len(ops.Namespaces) > 0 {
+		markUnusableIn(ctx, d.ServerKubeClient, defs, ops.Namespaces)
+	}
+	return defs, nil
+}
+
+// listIn lists the definitions of kind in namespace that ops asks for.
+func (d *definitionServiceImpl) listIn(ctx context.Context, cli client.Client, list *unstructured.UnstructuredList, kind, namespace string, selector labels.Selector, ops DefinitionQueryOption) ([]*apisv1.DefinitionBase, error) {
+	if err := cli.List(ctx, list, &client.ListOptions{LabelSelector: selector, Namespace: namespace}); err != nil {
+		return nil, err
+	}
+
+	// Apply filters to list
+	filteredList := filters.ApplyToList(*list,
+		// Filter by applied workload
+		filters.ByAppliedWorkload(ops.AppliedWorkloads),
+		// Filter by which addon installed this definition
+		filters.ByOwnerAddon(ops.OwnerAddon),
+	)
+
+	var defs []*apisv1.DefinitionBase
+	for _, def := range filteredList.Items {
+		definition, err := convertDefinitionBase(def, kind)
+		if err != nil {
+			klog.Errorf("convert definition to base failure %s", err.Error())
+			continue
+		}
+		// A global policy applies itself, and KubeVela fails an Application that
+		// names one, so it is listed only for those asking for every definition.
+		if definition.Policy != nil && definition.Policy.Global && !ops.QueryAll {
+			continue
+		}
+		// KubeVela refuses an Application that names an abstract definition, so it
+		// is listed only for those asking for every definition, as a hidden one is.
+		if definition.Abstract && !ops.QueryAll {
+			continue
+		}
+		defs = append(defs, definition)
+	}
+	return defs, nil
+}
+
+// matchesNamespaceName reports whether one of the restrictions' names or globs
+// admits ns, which settles it without the Namespace's labels.
+func matchesNamespaceName(r *common.DefinitionRestrictions, ns string) bool {
+	return len(r.Namespaces) > 0 && nsrestrict.Allows(&common.DefinitionRestrictions{Namespaces: r.Namespaces}, ns, nil)
+}
+
+// markUnusableIn records, on each definition, which of the namespaces its
+// restrictions keep from using it, matched as the Application webhook matches
+// them. A Namespace's labels are read only when a selector needs them, once
+// each, with VelaUX's own identity: the webhook reads them with its own, so
+// what the user may read must not change the answer. A namespace that cannot
+// be read satisfies no selector, as in the webhook.
+func markUnusableIn(ctx context.Context, reader client.Reader, defs []*apisv1.DefinitionBase, namespaces []string) {
+	labels := map[string]map[string]string{}
+	labelsOf := func(name string) map[string]string {
+		if l, read := labels[name]; read {
+			return l
+		}
+		var ns v1.Namespace
+		if err := reader.Get(ctx, client.ObjectKey{Name: name}, &ns); err != nil {
+			klog.V(4).Infof("cannot read namespace %s to match definition restrictions: %v", name, err)
+		}
+		labels[name] = ns.Labels
+		return ns.Labels
+	}
+	for _, def := range defs {
+		r := def.Restrictions
+		for _, ns := range namespaces {
+			var nsLabels map[string]string
+			if r != nil && r.NamespaceSelector != nil && !matchesNamespaceName(r, ns) {
+				nsLabels = labelsOf(ns)
+			}
+			if !nsrestrict.Allows(r, ns, nsLabels) {
+				def.UnusableIn = append(def.UnusableIn, ns)
+			}
+		}
+	}
+}
+
+func getKindAndVersion(defType string) (apiVersion, kind string, err error) {
+	switch defType {
+	case componentKind:
+		return definitionAPIVersion, kindComponentDefinition, nil
+
+	case traitKind:
+		return definitionAPIVersion, kindTraitDefinition, nil
+
+	case "workflowstep":
+		return definitionAPIVersion, kindWorkflowStepDefinition, nil
+
+	case "policy":
+		return definitionAPIVersion, kindPolicyDefinition, nil
+
+	case definitionTypeSource:
+		return definitionAPIVersion, kindSourceDefinition, nil
+
+	default:
+		return "", "", bcode.ErrDefinitionTypeNotSupport
+	}
+}
+
+// AnnoDefinitionCategory TODO : Import this variable from types.AnnoDefinitionCategory
+const AnnoDefinitionCategory = "custom.definition.oam.dev/category"
+
+func convertDefinitionBase(def unstructured.Unstructured, kind string) (*apisv1.DefinitionBase, error) {
+	definition := &apisv1.DefinitionBase{
+		Name:        def.GetName(),
+		Alias:       def.GetAnnotations()[types.AnnoDefinitionAlias],
+		Description: def.GetAnnotations()[types.AnnoDefinitionDescription],
+		Icon:        def.GetAnnotations()[types.AnnoDefinitionIcon],
+		Labels:      def.GetLabels(),
+		Category:    def.GetAnnotations()[AnnoDefinitionCategory],
+		Status: func() string {
+			if _, exist := def.GetLabels()[types.LabelDefinitionHidden]; exist {
+				return "disable"
+			}
+			return "enable"
+		}(),
+		Restrictions: nsrestrict.OfUnstructured(def),
+	}
+	// Read from the object, not the typed spec: older KubeVela types predate them.
+	definition.Abstract, _, _ = unstructured.NestedBool(def.Object, "spec", "abstract")
+	definition.Extends, _, _ = unstructured.NestedString(def.Object, "spec", "extends")
+	// Set OwnerAddon field
+	for _, ownerRef := range def.GetOwnerReferences() {
+		if strings.HasPrefix(ownerRef.Name, addon.AddonAppPrefix) {
+			definition.OwnerAddon = addon.AppName2Addon(ownerRef.Name)
+			// We are only interested in one owner addon
+			break
+		}
+	}
+	if kind == kindComponentDefinition {
+		compDef := &v1beta1.ComponentDefinition{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(def.Object, compDef); err != nil {
+			return nil, errors.Wrap(err, "invalid component definition")
+		}
+		definition.WorkloadType = compDef.Spec.Workload.Type //nolint:staticcheck // still returned for clients that read it
+		definition.Component = &compDef.Spec
+	}
+	if kind == kindTraitDefinition {
+		traitDef := &v1beta1.TraitDefinition{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(def.Object, traitDef); err != nil {
+			return nil, errors.Wrap(err, "invalid trait definition")
+		}
+		definition.Trait = &traitDef.Spec
+	}
+	if kind == kindWorkflowStepDefinition {
+		workflowStepDef := &v1beta1.WorkflowStepDefinition{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(def.Object, workflowStepDef); err != nil {
+			return nil, errors.Wrap(err, "invalid trait definition")
+		}
+		definition.WorkflowStep = &workflowStepDef.Spec
+	}
+	if kind == kindPolicyDefinition {
+		policyDef := &v1beta1.PolicyDefinition{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(def.Object, policyDef); err != nil {
+			return nil, errors.Wrap(err, "invalid trait definition")
+		}
+		definition.Policy = &policyDef.Spec
+		definition.PolicyScope = policyScope(def.GetName(), policyDef.Spec.Scope)
+	}
+	if kind == kindSourceDefinition {
+		sourceDef := &v1beta1.SourceDefinition{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(def.Object, sourceDef); err != nil {
+			return nil, errors.Wrap(err, "invalid source definition")
+		}
+		definition.Source = &sourceDef.Spec
+	}
+	return definition, nil
+}
+
+// DetailDefinition get definition detail
+func (d *definitionServiceImpl) DetailDefinition(ctx context.Context, name, defType string) (*apisv1.DetailDefinitionResponse, error) {
+	return d.DetailDefinitionAt(ctx, name, defType, "")
+}
+
+// DetailDefinitionAt is a definition's detail with the parameters of one of its
+// versions: the controller writes each revision's schema beside the latest's,
+// as <type>-schema-<name>-<version>.
+func (d *definitionServiceImpl) DetailDefinitionAt(ctx context.Context, name, defType, version string) (*apisv1.DetailDefinitionResponse, error) {
+	def := &unstructured.Unstructured{}
+	apiVersion, kind, err := getKindAndVersion(defType)
+	if err != nil {
+		return nil, err
+	}
+	def.SetAPIVersion(apiVersion)
+	def.SetKind(kind)
+	place, err := d.placeOf(ctx, kind, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := place.cli.Get(ctx, k8stypes.NamespacedName{Namespace: place.namespace, Name: name}, def); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, bcode.ErrDefinitionNotFound
+		}
+		return nil, err
+	}
+	base, err := convertDefinitionBase(*def, kind)
+	if err != nil {
+		return nil, err
+	}
+	base.Namespace, base.Scope = place.namespace, scopeOfNamespace(place.namespace)
+	schemaName := fmt.Sprintf("%s-schema-%s", defType, name)
+	if version != "" {
+		schemaName = fmt.Sprintf("%s-%s", schemaName, version)
+	}
+	var cm v1.ConfigMap
+	if err := place.cli.Get(ctx, k8stypes.NamespacedName{Namespace: place.namespace, Name: schemaName}, &cm); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+		if version != "" {
+			return nil, bcode.ErrDefinitionNotFound
+		}
+	}
+
+	definition := &apisv1.DetailDefinitionResponse{
+		DefinitionBase: *base,
+	}
+	data, ok := cm.Data[types.OpenapiV3JSONSchema]
+	if ok {
+		schema := &openapi3.Schema{}
+		if err := schema.UnmarshalJSON([]byte(data)); err != nil {
+			return nil, err
+		}
+		definition.APISchema = schema
+		defaultUISchema := generatedUISchema(cm)
+		if defaultUISchema == nil {
+			defaultUISchema = renderDefaultUISchema(schema)
+		}
+		// patch from custom ui schema
+		definition.UISchema = renderCustomUISchema(ctx, place.cli, place.namespace, name, defType, defaultUISchema)
+	}
+	if data, ok := cm.Data[types.SourceOutputSchema]; ok {
+		output := &openapi3.Schema{}
+		if err := output.UnmarshalJSON([]byte(data)); err != nil {
+			return nil, err
+		}
+		definition.OutputSchema = output
+	}
+
+	return definition, nil
+}
+
+// generatedUISchema is the form the controller generated from the
+// definition's parameter, or nil where the controller predates it.
+func generatedUISchema(cm v1.ConfigMap) []*schema.UIParameter {
+	data, ok := cm.Data[types.DefaultUISchema]
+	if !ok {
+		return nil
+	}
+	var ui []*schema.UIParameter
+	if err := json.Unmarshal([]byte(data), &ui); err != nil {
+		klog.Warningf("ignoring the generated ui schema in %s/%s: %s", cm.Namespace, cm.Name, err.Error())
+		return nil
+	}
+	return ui
+}
+
+func renderCustomUISchema(ctx context.Context, cli client.Client, namespace, name, defType string, defaultSchema []*schema.UIParameter) []*schema.UIParameter {
+	var cm v1.ConfigMap
+	if err := cli.Get(ctx, k8stypes.NamespacedName{
+		Namespace: namespace,
+		Name:      fmt.Sprintf("%s-uischema-%s", defType, name),
+	}, &cm); err != nil {
+		if !apierrors.IsNotFound(err) {
+			klog.Errorf("find uischema configmap from cluster failure %s", err.Error())
+		}
+		return defaultSchema
+	}
+	data, ok := cm.Data[types.UISchema]
+	if !ok {
+		return defaultSchema
+	}
+	schema := []*schema.UIParameter{}
+	if err := json.Unmarshal([]byte(data), &schema); err != nil {
+		klog.Errorf("unmarshal ui schema failure %s", err.Error())
+		return defaultSchema
+	}
+	return patchSchema(defaultSchema, schema)
+}
+
+// AddDefinitionUISchema add definition custom ui schema config
+func (d *definitionServiceImpl) AddDefinitionUISchema(ctx context.Context, name, defType string, schema []*schema.UIParameter) ([]*schema.UIParameter, error) {
+	dataBate, err := json.Marshal(schema)
+	if err != nil {
+		klog.Errorf("json marshal failure %s", err.Error())
+		return nil, bcode.ErrInvalidDefinitionUISchema
+	}
+	_, kind, err := getKindAndVersion(defType)
+	if err != nil {
+		return nil, err
+	}
+	place, err := d.placeOf(ctx, kind, name)
+	if err != nil {
+		return nil, err
+	}
+	var cm v1.ConfigMap
+	if err := place.cli.Get(ctx, k8stypes.NamespacedName{
+		Namespace: place.namespace,
+		Name:      fmt.Sprintf("%s-uischema-%s", defType, name),
+	}, &cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			err = place.cli.Create(ctx, &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: place.namespace,
+					Name:      fmt.Sprintf("%s-uischema-%s", defType, name),
+				},
+				Data: map[string]string{
+					types.UISchema: string(dataBate),
+				},
+			})
+		}
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		cm.Data[types.UISchema] = string(dataBate)
+		err := place.cli.Update(ctx, &cm)
+		if err != nil {
+			return nil, err
+		}
+	}
+	res, err := d.DetailDefinition(ctx, name, defType)
+	if err != nil {
+		return nil, err
+	}
+	return res.UISchema, nil
+}
+
+// UpdateDefinitionStatus update the status of the definition
+func (d *definitionServiceImpl) UpdateDefinitionStatus(ctx context.Context, name string, update apisv1.UpdateDefinitionStatusRequest) (*apisv1.DetailDefinitionResponse, error) {
+	def := &unstructured.Unstructured{}
+	version, kind, err := getKindAndVersion(update.DefinitionType)
+	if err != nil {
+		return nil, err
+	}
+	def.SetAPIVersion(version)
+	def.SetKind(kind)
+	place, err := d.placeOf(ctx, kind, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := place.cli.Get(ctx, k8stypes.NamespacedName{Namespace: place.namespace, Name: name}, def); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, bcode.ErrDefinitionNotFound
+		}
+		return nil, err
+	}
+	_, exist := def.GetLabels()[types.LabelDefinitionHidden]
+	if exist && !update.HiddenInUI {
+		labels := def.GetLabels()
+		delete(labels, types.LabelDefinitionHidden)
+		def.SetLabels(labels)
+		if err := place.cli.Update(ctx, def); err != nil {
+			return nil, err
+		}
+	}
+	if !exist && update.HiddenInUI {
+		labels := def.GetLabels()
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels[types.LabelDefinitionHidden] = DefinitionHidden
+		def.SetLabels(labels)
+		if err := place.cli.Update(ctx, def); err != nil {
+			return nil, err
+		}
+	}
+	return d.DetailDefinition(ctx, name, update.DefinitionType)
+}
+
+func patchSchema(defaultSchema, customSchema []*schema.UIParameter) []*schema.UIParameter {
+	var customSchemaMap = make(map[string]*schema.UIParameter, len(customSchema))
+	for i, custom := range customSchema {
+		customSchemaMap[custom.JSONKey] = customSchema[i]
+	}
+	if len(defaultSchema) == 0 {
+		return customSchema
+	}
+	for i := range defaultSchema {
+		dSchema := defaultSchema[i]
+		if cusSchema, exist := customSchemaMap[dSchema.JSONKey]; exist {
+			if cusSchema.Description != "" {
+				dSchema.Description = cusSchema.Description
+			}
+			if cusSchema.Label != "" {
+				dSchema.Label = cusSchema.Label
+			}
+			if cusSchema.SubParameterGroupOption != nil {
+				dSchema.SubParameterGroupOption = cusSchema.SubParameterGroupOption
+			}
+			if cusSchema.Validate != nil {
+				dSchema.Validate = cusSchema.Validate
+			}
+			if cusSchema.UIType != "" {
+				dSchema.UIType = cusSchema.UIType
+			}
+			if cusSchema.Disable != nil {
+				dSchema.Disable = cusSchema.Disable
+			}
+			if cusSchema.SubParameters != nil {
+				dSchema.SubParameters = patchSchema(dSchema.SubParameters, cusSchema.SubParameters)
+			}
+			if cusSchema.Sort != 0 {
+				dSchema.Sort = cusSchema.Sort
+			}
+			if cusSchema.Additional != nil {
+				dSchema.Additional = cusSchema.Additional
+			}
+			if cusSchema.Style != nil {
+				dSchema.Style = cusSchema.Style
+			}
+			if cusSchema.Conditions != nil {
+				dSchema.Conditions = cusSchema.Conditions
+			}
+		}
+	}
+	sort.Slice(defaultSchema, func(i, j int) bool {
+		return defaultSchema[i].Sort < defaultSchema[j].Sort
+	})
+	return defaultSchema
+}
+
+func renderDefaultUISchema(apiSchema *openapi3.Schema) []*schema.UIParameter {
+	if apiSchema == nil {
+		return nil
+	}
+	var params []*schema.UIParameter
+	for key, property := range apiSchema.Properties {
+		if property.Value != nil {
+			param := renderUIParameter(key, stringtools.Capitalize(key), property, apiSchema.Required)
+			params = append(params, param)
+		}
+	}
+	sortDefaultUISchema(params)
+	return params
+}
+
+// Sort Default UISchema
+// 1.Check validate.required. It is True, the sort number will be lower.
+// 2.Check subParameters. The more subparameters, the larger the sort number.
+// 3.If validate.required or subParameters is equal, sort by Label
+//
+// The sort number starts with 100.
+func sortDefaultUISchema(params []*schema.UIParameter) {
+	sort.Slice(params, func(i, j int) bool {
+		switch {
+		case params[i].Validate.Required && !params[j].Validate.Required:
+			return true
+		case !params[i].Validate.Required && params[j].Validate.Required:
+			return false
+		default:
+			switch {
+			case len(params[i].SubParameters) < len(params[j].SubParameters):
+				return true
+			case len(params[i].SubParameters) > len(params[j].SubParameters):
+				return false
+			default:
+				return params[i].Label < params[j].Label
+			}
+		}
+	})
+	for i, param := range params {
+		param.Sort += uint(i)
+	}
+}
+
+func renderUIParameter(key, label string, property *openapi3.SchemaRef, required []string) *schema.UIParameter {
+	var parameter schema.UIParameter
+	subType := ""
+	if property.Value.Items != nil {
+		if property.Value.Items.Value != nil {
+			subType = schemaType(property.Value.Items.Value)
+		}
+		parameter.SubParameters = renderDefaultUISchema(property.Value.Items.Value)
+	}
+	if property.Value.Properties != nil {
+		parameter.SubParameters = renderDefaultUISchema(property.Value)
+	}
+	var ap = property.Value.AdditionalProperties
+	if ap.Schema != nil && ap.Schema.Value != nil {
+		value := ap.Schema.Value
+		parameter.SubParameters = renderDefaultUISchema(value)
+		var enable = true
+		parameter.AdditionalParameter = renderUIParameter(value.Title, stringtools.Capitalize(value.Title), property.Value.AdditionalProperties.Schema, value.Required)
+		parameter.Additional = &enable
+	}
+	parameter.Validate = &schema.Validate{}
+	parameter.Validate.DefaultValue = property.Value.Default
+	for _, enum := range property.Value.Enum {
+		parameter.Validate.Options = append(parameter.Validate.Options, schema.Option{Label: RenderLabel(enum), Value: enum})
+	}
+	parameter.JSONKey = key
+	parameter.Description = property.Value.Description
+	parameter.Label = label
+	parameter.UIType = schema.GetDefaultUIType(schemaType(property.Value), len(parameter.Validate.Options) != 0, subType, len(property.Value.Properties) > 0)
+	parameter.Validate.Max = property.Value.Max
+	parameter.Validate.MaxLength = property.Value.MaxLength
+	parameter.Validate.Min = property.Value.Min
+	parameter.Validate.MinLength = property.Value.MinLength
+	parameter.Validate.Pattern = property.Value.Pattern
+	parameter.Validate.Required = slices.Contains(required, property.Value.Title)
+	parameter.Validate.Immutable = isImmutable(property.Value)
+	parameter.Sort = 100
+	return &parameter
+}
+
+// schemaType is a schema's first type, or empty for one that sets none, as CUE
+// emits for an open value such as `{...}` or `[string]: _`.
+func schemaType(s *openapi3.Schema) string {
+	if s.Type == nil || len(*s.Type) == 0 {
+		return ""
+	}
+	return (*s.Type)[0]
+}
+
+// extensionImmutable marks a parameter KubeVela's Application webhook refuses to
+// change once deployed: a +immutable field in the definition, as KubeVela writes
+// it into the parameter schema (its schema.ExtensionImmutable).
+const extensionImmutable = "x-immutable"
+
+func isImmutable(s *openapi3.Schema) bool {
+	immutable, _ := s.Extensions[extensionImmutable].(bool)
+	return immutable
+}
+
+// RenderLabel render option label
+func RenderLabel(source interface{}) string {
+	switch v := source.(type) {
+	case int:
+		return fmt.Sprintf("%d", v)
+	case string:
+		return stringtools.Capitalize(v)
+	default:
+		return stringtools.Capitalize(fmt.Sprintf("%v", v))
+	}
+}
+
+// policyScope classifies a policy as KubeVela does, for its policy's type.
+func policyScope(policyType string, scope v1beta1.PolicyScope) string {
+	switch {
+	case appfile.IsBuiltinPolicyType(policyType):
+		return policyScopeBuiltin
+	case scope == v1beta1.ApplicationScope:
+		return policyScopeApplication
+	default:
+		return policyScopeWorkload
+	}
+}
+
+// revisionTypes are the definition types a DefinitionRevision records, by the
+// type name VelaUX's API uses.
+var revisionTypes = map[string]common.DefinitionType{
+	"component":          common.ComponentType,
+	"trait":              common.TraitType,
+	"policy":             common.PolicyType,
+	"workflowstep":       common.WorkflowStepType,
+	definitionTypeSource: common.SourceType,
+}
+
+// revisionOf is the name of the definition a revision snapshots.
+func revisionOf(rev v1beta1.DefinitionRevision) string {
+	switch rev.Spec.DefinitionType {
+	case common.ComponentType:
+		return rev.Spec.ComponentDefinition.Name
+	case common.TraitType:
+		return rev.Spec.TraitDefinition.Name
+	case common.PolicyType:
+		return rev.Spec.PolicyDefinition.Name
+	case common.WorkflowStepType:
+		return rev.Spec.WorkflowStepDefinition.Name
+	case common.SourceType:
+		return rev.Spec.SourceDefinition.Name
+	}
+	return ""
+}
+
+// ListDefinitionRevisions lists a definition's revisions, newest first. A
+// revision is named <definition>-<version>, so its version is what an
+// Application writes after @ to pin it.
+func (d *definitionServiceImpl) ListDefinitionRevisions(ctx context.Context, name, defType string) ([]apisv1.DefinitionRevision, error) {
+	definitionType, ok := revisionTypes[defType]
+	if !ok {
+		return nil, bcode.ErrDefinitionTypeNotSupport
+	}
+	_, kind, err := getKindAndVersion(defType)
+	if err != nil {
+		return nil, err
+	}
+	place, err := d.placeOf(ctx, kind, name)
+	if err != nil {
+		return nil, err
+	}
+	var list v1beta1.DefinitionRevisionList
+	if err := place.cli.List(ctx, &list, client.InNamespace(place.namespace)); err != nil {
+		return nil, err
+	}
+	revisions := []apisv1.DefinitionRevision{}
+	for _, rev := range list.Items {
+		if rev.Spec.DefinitionType != definitionType || revisionOf(rev) != name {
+			continue
+		}
+		revisions = append(revisions, apisv1.DefinitionRevision{
+			Revision:   rev.Spec.Revision,
+			Version:    strings.TrimPrefix(rev.Name, name+"-"),
+			Hash:       rev.Spec.RevisionHash,
+			CreateTime: rev.CreationTimestamp.Time,
+		})
+	}
+	sort.Slice(revisions, func(i, j int) bool { return revisions[i].Revision > revisions[j].Revision })
+	return revisions, nil
+}
+
+// scopeOfNamespace is the scope a definition in namespace has.
+func scopeOfNamespace(namespace string) string {
+	if namespace == types.DefaultKubeVelaNS {
+		return definitionScopeGlobal
+	}
+	return definitionScopeProject
+}

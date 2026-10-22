@@ -1,0 +1,54 @@
+// The cluster table: its name beside the cluster's icon, the alias muted.
+.cluster-table {
+  overflow: auto;
+  border-top: 1px solid var(--c-divider);
+}
+
+.cluster-table-name {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  img {
+    flex: none;
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
+  }
+  a,
+  .cluster-table-title {
+    font-weight: 600;
+  }
+}
+
+.cluster-table-alias {
+  margin-left: 8px;
+  color: var(--c-text-3);
+  font-size: 12px;
+}
+
+.cluster-table-labels {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.cluster-table-label {
+  padding: 0 6px;
+  color: var(--c-text-2);
+  font-size: 12px;
+  line-height: 20px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: 2px;
+}
+
+.cluster-table-description {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.cluster-table-nowrap {
+  white-space: nowrap;
+}

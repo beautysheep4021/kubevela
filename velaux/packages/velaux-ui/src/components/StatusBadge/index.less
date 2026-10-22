@@ -1,0 +1,52 @@
+// Status tones, shared by badges, chips and coloured card edges: an element
+// with tone-<name> sets --tone and --tone-bg for its children.
+@tone-healthy: #00b42a;
+@tone-progressing: #1b58f4;
+@tone-suspended: #ff7d00;
+@tone-unhealthy: #f77234;
+@tone-failed: #f53f3f;
+@tone-neutral: #a9aeb8;
+
+.tone(@name, @c) {
+  .tone-@{name} {
+    --tone: @c;
+    --tone-bg: fade(@c, 10%);
+  }
+}
+.tone(healthy, @tone-healthy);
+.tone(progressing, @tone-progressing);
+.tone(suspended, @tone-suspended);
+.tone(unhealthy, @tone-unhealthy);
+.tone(failed, @tone-failed);
+.tone(neutral, @tone-neutral);
+.tone(undeployed, @tone-neutral);
+
+// A status reads as a coloured dot before plain text, as in the consoles'
+// tables.
+.status-badge {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--c-text);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  background: var(--tone);
+  border-radius: 50%;
+}
+
+.tone-progressing .status-dot {
+  animation: status-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}

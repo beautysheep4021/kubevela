@@ -1,0 +1,128 @@
+// Fusion's controls, squared off and quietened to sit in the console: square
+// corners on buttons and fields, a grey table head, and a light hover row.
+
+.next-btn {
+  border-radius: var(--radius) !important;
+  font-family: var(--font);
+}
+.next-btn.next-medium {
+  height: 32px;
+  padding: 0 16px;
+  font-size: 13px;
+}
+.next-btn-normal:not(.next-btn-text) {
+  color: var(--c-text);
+  border-color: var(--c-border-strong);
+  &:hover {
+    color: var(--c-primary);
+    border-color: var(--c-primary);
+  }
+}
+
+.next-input,
+.next-select .next-select-inner,
+.next-number-picker .next-input {
+  border-radius: var(--radius) !important;
+}
+.next-input.next-medium,
+.next-select.next-medium .next-select-inner {
+  min-height: 32px;
+}
+
+// Tables: the head on a grey band, rows ruled, the hovered row tinted.
+.next-table {
+  font-family: var(--font);
+  border-radius: 0;
+  table {
+    border-color: var(--c-border);
+  }
+  th {
+    color: var(--c-text-2) !important;
+    font-weight: 600 !important;
+    font-size: 13px;
+    background: var(--c-surface-2) !important;
+    border-color: var(--c-border) !important;
+    .next-table-cell-wrapper {
+      padding: 10px 16px;
+    }
+  }
+  td {
+    color: var(--c-text);
+    font-size: 13px;
+    border-color: var(--c-divider) !important;
+    .next-table-cell-wrapper {
+      padding: 12px 16px;
+    }
+  }
+  tr.next-table-row:hover td,
+  tr.next-table-row.hovered td {
+    background: #f7f9fc !important;
+  }
+  .next-table-empty {
+    color: var(--c-text-3);
+  }
+  // A table's first column, its name, links to the resource.
+  td a {
+    color: var(--c-primary);
+  }
+}
+
+// Pagination sits at the foot of a list, its total first.
+.next-pagination {
+  font-family: var(--font);
+  .next-pagination-item {
+    min-width: 28px;
+    height: 28px;
+    border-radius: var(--radius);
+  }
+  .next-pagination-item.next-current {
+    color: #fff;
+    background: var(--c-primary);
+    border-color: var(--c-primary);
+  }
+  .next-pagination-total {
+    margin-right: 12px;
+    color: var(--c-text-2);
+  }
+}
+
+// Tabs: an underline under the current tab, as the consoles' sub-pages use.
+.next-tabs-wrapped.next-tabs-top > .next-tabs-bar,
+.next-tabs-pure > .next-tabs-bar {
+  border-bottom-color: var(--c-border);
+}
+.next-tabs-tab.active {
+  color: var(--c-primary) !important;
+  font-weight: 500;
+}
+
+.next-card {
+  border-color: var(--c-border) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: var(--shadow-card) !important;
+}
+
+.next-breadcrumb {
+  font-size: 13px;
+  .next-breadcrumb-text {
+    color: var(--c-text-3);
+    a {
+      color: var(--c-text-3);
+      &:hover {
+        color: var(--c-primary);
+      }
+    }
+  }
+  .next-breadcrumb-text.activated,
+  .next-breadcrumb-item:last-child .next-breadcrumb-text {
+    color: var(--c-text);
+  }
+}
+
+.next-form-item-label label {
+  color: var(--c-text-2);
+}
+.next-form-item-label .next-form-item-required::before,
+.next-form-item-label label[required]::before {
+  color: var(--c-danger);
+}

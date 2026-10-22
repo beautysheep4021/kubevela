@@ -1,0 +1,200 @@
+.reports-body {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.reports-catalogue {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 16px;
+  width: 280px;
+}
+
+.reports-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  .reports-group-title {
+    margin: 0 2px 2px;
+    color: var(--c-text-3);
+    font-weight: 600;
+    font-size: 12px;
+  }
+}
+
+.reports-note {
+  color: #b45309;
+  font-size: 12px;
+}
+
+.reports-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  text-align: left;
+  background: #fff;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  &:hover {
+    border-color: var(--c-border-strong);
+  }
+  &.active {
+    background: var(--c-primary-bg);
+    border-color: var(--c-primary);
+    box-shadow: 0 0 0 1px var(--c-primary);
+  }
+  &.hidden {
+    background: var(--c-surface-2);
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+  &.invalid .reports-item-description {
+    color: #dc2626;
+  }
+  .reports-item-title {
+    color: var(--c-text);
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .reports-item-description {
+    color: var(--c-text-3);
+    font-size: 12px;
+    line-height: 17px;
+  }
+}
+
+// The result reads as a console panel: its head, then the parameters, the
+// numbers, the chart and the table.
+.reports-result {
+  flex: 1;
+  min-width: 0;
+  padding: 16px 20px;
+  background: #fff;
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+}
+
+.reports-result-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  .reports-result-title {
+    color: var(--c-text);
+    font-weight: 600;
+    font-size: 16px;
+  }
+  .reports-result-description {
+    margin-top: 2px;
+    color: var(--c-text-2);
+    font-size: 13px;
+  }
+  .reports-result-meta {
+    margin-top: 2px;
+    color: var(--c-text-3);
+    font-size: 12px;
+  }
+  .reports-scope {
+    margin-left: 8px;
+    padding: 1px 8px;
+    color: var(--c-text-2);
+    font-weight: 500;
+    font-size: 11px;
+    vertical-align: 2px;
+    background: var(--c-surface-2);
+    border-radius: 10px;
+  }
+  .reports-result-actions {
+    display: flex;
+    gap: 8px;
+    svg {
+      margin-right: 4px;
+      vertical-align: -2px;
+    }
+  }
+}
+
+.report-chart {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-divider);
+  border-radius: var(--radius);
+  .report-chart-title {
+    margin-bottom: 8px;
+    color: var(--c-text-2);
+    font-weight: 600;
+    font-size: 12px;
+  }
+}
+
+.reports-message {
+  margin-bottom: 12px;
+}
+
+.reports-parameters {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  margin-bottom: 16px;
+  padding: 12px 14px 0;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-divider);
+  border-radius: var(--radius);
+  > :first-child {
+    flex: 1;
+    min-width: 0;
+  }
+  > .next-btn {
+    margin-bottom: 16px;
+  }
+}
+
+.report-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.report-stat {
+  padding: 12px 14px;
+  background: #fff;
+  border: 1px solid var(--c-border);
+  border-left: 3px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  .report-stat-value {
+    color: var(--c-text);
+    font-weight: 600;
+    font-size: 22px;
+    line-height: 28px;
+  }
+  .report-stat-label {
+    color: var(--c-text-3);
+    font-size: 12px;
+  }
+  &.tone-healthy {
+    border-left-color: #00b578;
+  }
+  &.tone-progressing {
+    border-left-color: #ff8f1f;
+    .report-stat-value {
+      color: #c2410c;
+    }
+  }
+  &.tone-unhealthy {
+    border-left-color: #e5484d;
+    .report-stat-value {
+      color: #dc2626;
+    }
+  }
+}
+
+.reports-result .table-pager {
+  margin: 0 -20px -16px;
+}

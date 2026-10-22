@@ -1,0 +1,90 @@
+// A resource's detail header, as the cloud consoles head one: a white card
+// with the way back, the name and status, the actions at the right, its key
+// facts as a description list, and its tabs along the card's foot. The
+// project page heads itself the same way.
+.detail-card {
+  margin-bottom: 16px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+.detail-head {
+  padding: 14px 24px 4px;
+  .breadcrumb {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    color: var(--c-text-3);
+    a {
+      display: inline-flex;
+      color: var(--c-text-3);
+      &:hover {
+        color: var(--c-primary);
+      }
+    }
+    svg {
+      width: 14px;
+      height: 14px;
+    }
+  }
+}
+
+.detail-head-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.detail-head-name {
+  margin: 0;
+  color: var(--c-text);
+  font-weight: 600;
+  font-size: 20px;
+  line-height: 28px;
+}
+
+.detail-head-id {
+  color: var(--c-text-3);
+  font-size: 13px;
+}
+
+.detail-head-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+}
+
+// The facts sit in columns, label over value, as the consoles' summaries do.
+.detail-head-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px 24px;
+  margin: 16px 0 12px;
+  padding: 0;
+  > div {
+    min-width: 0;
+  }
+  dt {
+    margin-bottom: 4px;
+    color: var(--c-text-3);
+    font-size: 12px;
+    line-height: 18px;
+  }
+  dd {
+    margin: 0;
+    overflow: hidden;
+    color: var(--c-text);
+    font-size: 13px;
+    line-height: 20px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .detail-head-wide {
+    grid-column: 1 / -1;
+  }
+}

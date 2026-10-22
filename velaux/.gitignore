@@ -1,0 +1,47 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+_bin/
+_tmp/
+node_modules/
+.umi/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+vendor/
+build
+
+# IDE
+.idea
+.vscode
+.eslintcache
+.env
+package-lock.json
+yarn-error.log
+
+.DS_Store
+dist
+
+/packages/**/compiled
+.yarn/.cache/
+.yarn/cache/
+.yarn/unplugged
+.yarn/install-state.gz
+
+.pnp.*
+
+tsconfig.tsbuildinfo
+
+e2e-plugins
+
+npm-artifacts
+bin
+coverage*

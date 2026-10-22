@@ -1,0 +1,167 @@
+/*
+ Copyright 2022 The KubeVela Authors.
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+ 	http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+*/
+
+package sync
+
+import (
+	"context"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	velatypes "github.com/oam-dev/kubevela/apis/types"
+	"github.com/oam-dev/kubevela/pkg/oam/util"
+
+	"github.com/kubevela/velaux/pkg/server/domain/model"
+	"github.com/kubevela/velaux/pkg/server/infrastructure/datastore"
+)
+
+var _ = Describe("Test Cache", func() {
+	BeforeEach(func() {
+	})
+
+	It("Test cache update and delete", func() {
+
+		By("Preparing database")
+		dbNamespace := "cache-db-ns1-test"
+
+		ds, err := NewDatastore(datastore.Config{Type: "kubeapi", Database: dbNamespace})
+		Expect(ds).ToNot(BeNil())
+		Expect(err).Should(BeNil())
+		var ns = corev1.Namespace{}
+		ns.Name = dbNamespace
+		err = k8sClient.Create(context.TODO(), &ns)
+		Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+
+		cr2ux := newCR2UX(ds)
+
+		ctx := context.Background()
+		Expect(ds.Add(ctx, &model.Application{Name: "app1"})).Should(BeNil())
+		Expect(ds.Add(ctx, &model.Application{Name: "app2", Labels: map[string]string{
+			model.LabelSyncGeneration: "1",
+			model.LabelSyncNamespace:  "app2-ns",
+		}})).Should(BeNil())
+
+		Expect(ds.Add(ctx, &model.Application{Name: "app3", Labels: map[string]string{
+			model.LabelSyncGeneration:    "1",
+			model.LabelSyncNamespace:     "app3-ns",
+			velatypes.LabelSourceOfTruth: velatypes.FromUX,
+		}})).Should(BeNil())
+
+		Expect(cr2ux.initCache(ctx)).Should(BeNil())
+		app1 := &v1beta1.Application{}
+		app1.Name = "app1"
+		app1.Namespace = "app1-ns"
+		Expect(cr2ux.shouldSyncMetaFromCLI(ctx, app1, false)).Should(BeEquivalentTo(true))
+
+		app2 := &v1beta1.Application{}
+		app2.Name = "app2"
+		app2.Namespace = "app2-ns"
+		app2.Generation = 1
+		app2.Status.LatestRevision = &common.Revision{Name: "v1"}
+
+		Expect(cr2ux.shouldSyncMetaFromCLI(ctx, app2, false)).Should(BeEquivalentTo(true))
+
+		// Only need to sync once.
+		cr2ux.syncCache(formatAppComposedName(app2.Name, app2.Namespace), "v1", 1)
+		Expect(cr2ux.shouldSyncMetaFromCLI(ctx, app2, false)).Should(BeEquivalentTo(false))
+
+		app3 := &v1beta1.Application{}
+		app3.Name = "app3"
+		app3.Namespace = "app3-ns"
+		app3.ResourceVersion = "3"
+		app3.Labels = map[string]string{
+			velatypes.LabelSourceOfTruth: velatypes.FromInner,
+		}
+
+		Expect(cr2ux.appFromCLI(app3)).Should(BeEquivalentTo(false))
+
+		Expect(ds.Put(ctx, &model.Application{Name: "app1", Labels: map[string]string{
+			model.LabelSyncRevision:  "v1",
+			model.LabelSyncNamespace: "app1-ns",
+		}})).Should(BeNil())
+		cr2ux.syncCache(formatAppComposedName(app1.Name, app1.Namespace), "v1", 0)
+		app1.Status.LatestRevision = &common.Revision{Name: "v1"}
+		Expect(cr2ux.shouldSyncMetaFromCLI(ctx, app1, false)).Should(BeEquivalentTo(false))
+		Expect(cr2ux.shouldSyncMetaFromCLI(ctx, app1, true)).Should(BeEquivalentTo(true))
+		Expect(ds.Delete(ctx, &model.Application{Name: "app1"})).Should(BeNil())
+		Expect(cr2ux.shouldSyncMetaFromCLI(ctx, app1, false)).Should(BeEquivalentTo(true))
+
+	})
+	It("Test an addon's record from before the addon label is synced again", func() {
+		dbNamespace := "cache-db-ns3-test"
+		ds, err := NewDatastore(datastore.Config{Type: "kubeapi", Database: dbNamespace})
+		Expect(err).Should(BeNil())
+		ns := corev1.Namespace{}
+		ns.Name = dbNamespace
+		Expect(k8sClient.Create(context.TODO(), &ns)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+		cr2ux := newCR2UX(ds)
+		ctx := context.Background()
+
+		inner := map[string]string{
+			model.LabelSyncRevision:      "addon-old-v1",
+			model.LabelSyncNamespace:     "vela-system",
+			velatypes.LabelSourceOfTruth: velatypes.FromInner,
+		}
+		Expect(ds.Add(ctx, &model.Application{Name: "addon-old", Labels: inner})).Should(BeNil())
+		labelled := map[string]string{model.LabelSyncAddon: "new"}
+		for k, v := range inner {
+			labelled[k] = v
+		}
+		labelled[model.LabelSyncRevision] = "addon-new-v1"
+		Expect(ds.Add(ctx, &model.Application{Name: "addon-new", Labels: labelled})).Should(BeNil())
+		Expect(cr2ux.initCache(ctx)).Should(BeNil())
+
+		old := &v1beta1.Application{}
+		old.Name, old.Namespace = "addon-old", "vela-system"
+		old.Status.LatestRevision = &common.Revision{Name: "addon-old-v1"}
+		Expect(cr2ux.shouldSyncMetaFromCLI(ctx, old, false)).Should(BeTrue(), "synced again for its addon label")
+
+		current := &v1beta1.Application{}
+		current.Name, current.Namespace = "addon-new", "vela-system"
+		current.Status.LatestRevision = &common.Revision{Name: "addon-new-v1"}
+		Expect(cr2ux.shouldSyncMetaFromCLI(ctx, current, false)).Should(BeFalse(), "an up-to-date record is not")
+	})
+
+	It("Test don't cache with from inner system label", func() {
+		dbNamespace := "cache-db-ns2-test"
+
+		ds, err := NewDatastore(datastore.Config{Type: "kubeapi", Database: dbNamespace})
+		Expect(ds).ToNot(BeNil())
+		Expect(err).Should(BeNil())
+		var ns = corev1.Namespace{}
+		ns.Name = dbNamespace
+		err = k8sClient.Create(context.TODO(), &ns)
+		Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+
+		cr2ux := newCR2UX(ds)
+		ctx := context.Background()
+
+		app1 := &v1beta1.Application{}
+		app1.Name = "app1"
+		app1.Namespace = dbNamespace
+		app1.Generation = 1
+		app1.Spec.Components = []common.ApplicationComponent{}
+		app1.Labels = make(map[string]string)
+		app1.Labels[velatypes.LabelSourceOfTruth] = velatypes.FromInner
+		Expect(k8sClient.Create(ctx, app1)).Should(BeNil())
+		Expect(cr2ux.appFromCLI(app1)).Should(BeEquivalentTo(false))
+	})
+})

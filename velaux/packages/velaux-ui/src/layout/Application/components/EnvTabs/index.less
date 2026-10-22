@@ -1,0 +1,40 @@
+.top-menus {
+  display: flex;
+  flex-wrap: nowrap;
+  padding: 8px 16px;
+  .env-name {
+    padding: 0 16px;
+    font-size: var(--font-size-medium);
+    line-height: 46px;
+  }
+  .env-box {
+    display: flex;
+    flex-wrap: nowrap;
+    margin-left: 16px;
+    padding: 8px;
+    border: 1px solid var(--grey-200);
+    border-radius: 4px;
+  }
+  .top-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 200px;
+    margin-left: 16px;
+    padding: 8px 16px;
+    color: var(--grey-900);
+    font-size: var(--font-size-normal);
+    text-align: center;
+    background: #fff;
+    border: var(--grey-200) dashed 1px;
+    cursor: pointer;
+    &:first-child {
+      margin-left: 0px;
+    }
+    &.active {
+      color: #fff;
+      background: var(--primary-color);
+      border: 0;
+    }
+  }
+}

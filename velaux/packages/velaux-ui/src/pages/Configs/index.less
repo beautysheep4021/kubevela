@@ -1,0 +1,70 @@
+.list-content {
+  min-height: calc(100vh - 60px);
+  .production-title {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 60px;
+    color: #1b58f4;
+    font-size: 16px;
+  }
+  .create-btn {
+    margin: 16px 0;
+    text-align: right;
+  }
+  .next-table .next-table-header th .next-table-cell-wrapper {
+    display: flex;
+    justify-content: flex-start;
+  }
+
+  .next-table-cell.last .next-table-cell-wrapper {
+    text-align: left;
+    .next-btn-text {
+      padding-left: 0;
+    }
+  }
+  .next-table-header-icon {
+    margin-top: 2px;
+  }
+  .isReadyColor {
+    color: #20ad7e;
+  }
+  .isNotReady {
+    color: #f00;
+  }
+}
+
+// The configs list's head: the toolbar, then a tab per template above the
+// table, as a console lists one kind of resource by its types.
+.configs-head {
+  padding-bottom: 0;
+  .list-toolbar {
+    margin-bottom: 4px;
+  }
+}
+
+.configs-tabs {
+  .next-tabs-bar {
+    border-bottom: none;
+  }
+}
+
+.configs-tab-count {
+  margin-left: 6px;
+  padding: 0 6px;
+  color: var(--c-text-3);
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--c-surface-2);
+  border-radius: 9px;
+}
+
+.config-template {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  img {
+    width: 18px;
+    height: 18px;
+  }
+}

@@ -1,0 +1,292 @@
+// Steps are cards laid out by what they wait on, joined left to right; a card's
+// left edge and badge are its status, in the badge's tone.
+.run-canvas {
+  transform-origin: left top;
+  cursor: grab;
+}
+
+.run-graph {
+  position: relative;
+
+  .workflow-step {
+    position: absolute;
+  }
+
+  .step {
+    position: relative;
+    z-index: 1;
+    box-sizing: border-box;
+    padding: 12px 14px 12px 13px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-left: 3px solid var(--tone);
+    border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+    cursor: pointer;
+    transition: border-color 0.2s linear, box-shadow 0.2s linear;
+    &:hover {
+      border-color: #cbd5e1;
+      border-left-color: var(--tone);
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+    }
+    &.selected {
+      border-color: var(--primary-color);
+      border-left-color: var(--tone);
+      box-shadow: 0 0 0 1px var(--primary-color);
+    }
+    // A group is a container, not a step: tinted, dashed, and tagged.
+    &.group {
+      background: #f8fafc;
+      border: 1px dashed #94a3b8;
+      border-left: 3px solid var(--tone);
+      box-shadow: none;
+      cursor: default;
+      &:hover {
+        border-color: #94a3b8;
+        border-left-color: var(--tone);
+        box-shadow: none;
+      }
+    }
+    &.pending .step-name {
+      color: #64748b;
+    }
+  }
+
+  .step-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .step-group-tag {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+    padding: 1px 6px;
+    color: #475569;
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    background: #e2e8f0;
+    border-radius: 4px;
+  }
+  // A loop is a group that repeats: violet, and stacked when closed.
+  .step.group.loop {
+    background: #faf7ff;
+    border-color: #c4b5fd;
+    &:hover {
+      border-color: #c4b5fd;
+    }
+    &:not(.open) {
+      box-shadow: 4px 4px 0 -1px #fff, 4px 4px 0 0 #ddd6fe, 8px 8px 0 -1px #fff, 8px 8px 0 0 #ede9fe;
+    }
+  }
+  .step-group-tag.loop-tag {
+    color: #5b21b6;
+    background: #ede9fe;
+  }
+  .loop-segments {
+    display: flex;
+    gap: 4px;
+    margin-top: 10px;
+  }
+  .loop-segment {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .loop-segment-bar {
+    height: 6px;
+    background: var(--tone);
+    border-radius: 3px;
+  }
+  .loop-segment.tone-neutral .loop-segment-bar {
+    background: #e2e8f0;
+  }
+  .loop-segment-label {
+    overflow: hidden;
+    color: #475569;
+    font-size: 11px;
+    font-family: var(--font-family-code, monospace);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .loop-lanes {
+    display: flex;
+    flex-direction: column;
+    margin: 10px -6px -6px -5px;
+  }
+  .loop-lane {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    padding: 8px 10px;
+    background: #fff;
+    border: 1px solid #ede9fe;
+    border-radius: 8px;
+  }
+  .loop-lane-label {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    width: 76px;
+    cursor: default;
+  }
+  .loop-lane-name {
+    overflow: hidden;
+    color: #0f172a;
+    font-weight: 600;
+    font-size: 13px;
+    font-family: var(--font-family-code, monospace);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .loop-lane-index {
+    color: #64748b;
+    font-size: 11px;
+  }
+  .loop-then {
+    margin-left: 40px;
+    padding: 2px 0 2px 8px;
+    color: #64748b;
+    font-size: 11px;
+    border-left: 2px solid #c4b5fd;
+  }
+  .step-group-toggle {
+    display: inline-flex;
+    padding: 2px;
+    font-size: 15px;
+    color: #64748b;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    &:hover {
+      color: var(--primary-color);
+      background: #e2e8f0;
+    }
+  }
+  .step-group-body {
+    margin: 8px -6px -6px -5px;
+  }
+
+  .step-name {
+    overflow: hidden;
+    color: #0f172a;
+    font-weight: 600;
+    font-size: 14px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .step-meta {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 4px;
+    .step-type {
+      overflow: hidden;
+      color: #64748b;
+      font-size: 12px;
+      font-family: var(--font-family-code, monospace);
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+  }
+
+  .step-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #f1f5f9;
+    cursor: default;
+  }
+  .step-subs .step-actions {
+    margin: 2px 6px 6px;
+    padding-top: 0;
+    border-top: none;
+  }
+
+  .step-caption {
+    margin-top: 6px;
+    overflow: hidden;
+    color: #475569;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    &.error {
+      color: var(--failed-color, #dc2626);
+    }
+  }
+
+  .step-subs {
+    margin: 8px -6px 0 -5px;
+    padding-top: 6px;
+    border-top: 1px solid #f1f5f9;
+  }
+
+  .step-sub {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 5px 6px;
+    font-size: 13px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    &:hover {
+      background: #f8fafc;
+    }
+    &.selected {
+      background: #f8fafc;
+      border-color: var(--primary-color);
+    }
+    .step-sub-dot {
+      flex: none;
+      width: 8px;
+      height: 8px;
+      background: var(--tone);
+      border-radius: 50%;
+    }
+    .step-sub-name {
+      flex: 1;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .step-sub-time {
+      color: #64748b;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+  }
+
+  .workflow-connectors {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 0;
+    overflow: visible;
+    transform-origin: left top;
+  }
+  // A connector into a step the run has not reached is dashed.
+  .workflow-connector {
+    stroke: #cbd5e1;
+    stroke-width: 2px;
+    stroke-dasharray: 4 4;
+    &.reached {
+      stroke: #94a3b8;
+      stroke-dasharray: none;
+    }
+  }
+  .workflow-connector-head {
+    fill: #94a3b8;
+  }
+}

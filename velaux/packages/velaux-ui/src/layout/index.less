@@ -1,0 +1,71 @@
+@import '../styles/tokens.less';
+@import '../styles/fusion.less';
+@import '../components/Console/index.less';
+
+// The page fits the window: the top bar across, the navigation column down
+// the left, and the content scrolling on its own beside it.
+.layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  font-family: var(--font);
+}
+
+.layout-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.layout-shell {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.layout-content {
+  position: relative;
+  box-sizing: border-box;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  padding: 16px 20px 24px;
+  overflow: auto;
+  background-color: var(--c-page);
+  > * {
+    min-width: calc(var(--min-layout-width) - 500px);
+  }
+  &::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  &::-webkit-scrollbar-thumb {
+    background-color: rgba(0, 0, 0, 0.16);
+    border-radius: 3px;
+  }
+}
+
+// Dialogs read as the console's: a white head with a rule beneath it.
+.next-dialog {
+  border-radius: var(--radius);
+  .next-dialog-header {
+    padding: 14px 20px;
+    color: var(--c-text);
+    font-weight: 600;
+    font-size: 15px;
+    background: var(--c-surface);
+    border-bottom: 1px solid var(--c-border);
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
+  .next-dialog-close,
+  .next-dialog-close .next-dialog-close-icon {
+    color: var(--c-text-3);
+  }
+  .next-dialog-body {
+    padding-top: 20px;
+  }
+  .next-dialog-footer {
+    border-top: 1px solid var(--c-divider);
+  }
+}

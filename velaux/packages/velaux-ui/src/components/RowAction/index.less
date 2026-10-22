@@ -1,0 +1,36 @@
+// A row's action: a text link, spaced from the one before.
+.row-action {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  height: 22px;
+  padding: 0;
+  color: var(--c-primary);
+  font-size: 13px;
+  line-height: 22px;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  cursor: pointer;
+  &:not([disabled]):hover {
+    color: var(--c-primary-hover);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--c-primary);
+    outline-offset: 1px;
+  }
+  &[disabled] {
+    color: var(--c-text-disabled);
+    cursor: not-allowed;
+  }
+  & + & {
+    margin-left: 16px;
+  }
+  &.danger:not([disabled]) {
+    color: var(--c-danger);
+  }
+  svg {
+    width: 12px;
+    height: 12px;
+  }
+}
