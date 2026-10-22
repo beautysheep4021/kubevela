@@ -1,0 +1,28 @@
+// The project heads itself as the application does, with the shared detail
+// card; its tabs run along the card's foot.
+@import '../Application/components/Header/index.less';
+
+.project-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 16px;
+  overflow-x: auto;
+  border-top: 1px solid var(--c-divider);
+  .project-tab {
+    flex: none;
+    padding: 12px 10px 10px;
+    color: var(--c-text-2) !important;
+    font-size: 14px;
+    white-space: nowrap;
+    border-bottom: 2px solid transparent;
+    &:hover {
+      color: var(--c-primary) !important;
+      text-decoration: none !important;
+    }
+    &.active {
+      color: var(--c-primary) !important;
+      font-weight: 500;
+      border-bottom-color: var(--c-primary);
+    }
+  }
+}

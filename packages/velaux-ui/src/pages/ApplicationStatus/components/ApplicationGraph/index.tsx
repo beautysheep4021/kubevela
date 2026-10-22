@@ -1,0 +1,326 @@
+import React from 'react';
+
+import { RowAction } from '../../../../components/RowAction';
+import i18n from '../../../../i18n';
+
+import { TreeGraph } from '../../../../components/TreeGraph';
+import { dependencyItems } from '../../../../utils/dependencies';
+import type { DependencyItem } from '../../../../utils/dependencies';
+import type { TreeNode } from '../../../../components/TreeGraph/interface';
+
+import { resourceOrigin } from './origins';
+import { treeNodeKey } from '../../../../components/TreeGraph/utils';
+import { placementKey, sourceLinks, sourceReads } from './sources';
+import { flowNodes } from './flows';
+import { getApplicationDataFlows } from '../../../../api/application';
+import { ProjectContext } from '../../../../context';
+import type {
+  ApplicationDetail,
+  ApplicationStatus,
+  DataFlow,
+  EnvBinding,
+  ApplicationComponent,
+  ComponentStatus,
+  AppliedResource,
+  ResourceTreeNode,
+} from '@velaux/data';
+
+import { ShowResource } from './resource-show';
+
+import './index.less';
+import classNames from 'classnames';
+
+import { If } from '../../../../components/If';
+import { IoMdAdd } from 'react-icons/io';
+import { AiOutlineMinus } from 'react-icons/ai';
+
+type Props = {
+  applicationStatus?: ApplicationStatus;
+  application?: ApplicationDetail;
+  env?: EnvBinding;
+  resources: AppliedResource[];
+  components?: ApplicationComponent[];
+  graphType: 'resource-graph' | 'application-graph';
+};
+
+type State = {
+  showResource: boolean;
+  resource?: ResourceTreeNode;
+  zoom: number;
+  // flows are what moves between sources and components; undefined until read.
+  flows?: DataFlow[];
+};
+
+class ApplicationGraph extends React.Component<Props, State> {
+  constructor(props: Props) {
+    super(props);
+    this.state = {
+      showResource: false,
+      zoom: 1,
+    };
+  }
+
+  componentDidMount() {
+    this.loadFlows();
+  }
+
+  componentDidUpdate(prev: Props) {
+    if (
+      prev.env?.name !== this.props.env?.name ||
+      prev.application?.name !== this.props.application?.name ||
+      prev.graphType !== this.props.graphType
+    ) {
+      this.loadFlows();
+    }
+  }
+
+  // loadFlows reads the data flows the service graph draws between dependencies.
+  loadFlows() {
+    const { application, env, graphType } = this.props;
+    if (graphType !== 'application-graph' || !application?.name || !env?.name) {
+      return;
+    }
+    getApplicationDataFlows({ name: application.name, envName: env.name }).then((res: any) => {
+      if (res && Array.isArray(res.flows)) {
+        this.setState({ flows: res.flows });
+      }
+    });
+  }
+
+  convertNodeType(node: ResourceTreeNode) {
+    switch (node.kind) {
+      case 'Pod':
+        return 'pod';
+      case 'Component':
+        return 'component';
+      default:
+        return 'resource';
+    }
+  }
+
+  convertNode(resources: ResourceTreeNode[]): TreeNode[] {
+    const tree: TreeNode[] = [];
+    resources.map((res) => {
+      const node: TreeNode = {
+        resource: res,
+        nodeType: this.convertNodeType(res),
+      };
+      if (res.leafNodes) {
+        node.leafNodes = this.convertNode(res.leafNodes);
+      }
+      tree.push(node);
+    });
+    return tree;
+  }
+
+  convertComponentNode(
+    service: ComponentStatus,
+    component?: ApplicationComponent,
+    dependencies?: DependencyItem[]
+  ): TreeNode {
+    const node: TreeNode = {
+      nodeType: 'component',
+      resource: {
+        name: service.name,
+        namespace: service.namespace,
+        kind: 'Component',
+        component: component,
+        cluster: service.cluster,
+        service: service,
+      },
+      dependencies: dependencies,
+    };
+    return node;
+  }
+
+  isLeafNode(componentName: string, component: ApplicationComponent): boolean {
+    return component.dependsOn?.includes(componentName) || false;
+  }
+
+  // generate the component tree base the dependencies
+  generateTree(tree: Map<string, TreeNode>, components: ApplicationComponent[]) {
+    tree.forEach((node) => {
+      const nodeMap = new Map<string, TreeNode>();
+      node.leafNodes?.map((ln) => {
+        nodeMap.set(ln.resource.name, ln);
+      });
+      const deleteNode: string[] = [];
+      node.leafNodes?.map((n) => {
+        let isTop = true;
+        components.map((c) => {
+          if (this.isLeafNode(n.resource.name, c)) {
+            const parentNode = nodeMap.get(c.name);
+            if (parentNode && !parentNode.leafNodes) {
+              parentNode.leafNodes = [n];
+            } else if (parentNode && parentNode.leafNodes) {
+              parentNode.leafNodes.push(n);
+            }
+            isTop = false;
+          }
+        });
+        if (!isTop) {
+          deleteNode.push(n.resource.name);
+        }
+      });
+      node.leafNodes = node.leafNodes?.filter((n) => !deleteNode.includes(n.resource.name));
+    });
+  }
+
+  buildClusterNode(resources: AppliedResource[], graphType?: string): TreeNode[] {
+    const clusterTree: Map<string, TreeNode> = new Map<string, TreeNode>();
+    this.placements = new Map<string, string>();
+    if (graphType === 'resource-graph') {
+      resources.map((res) => {
+        const cluster = res.cluster || 'local';
+        if (!clusterTree.get(cluster)) {
+          clusterTree.set(cluster, { resource: { name: cluster }, nodeType: 'cluster' });
+        }
+        const node = clusterTree.get(cluster);
+        if (node) {
+          if (res.resourceTree) {
+            const applied = this.convertNode([res.resourceTree]);
+            applied[0].origin = resourceOrigin(res, this.props.components, this.props.applicationStatus?.services);
+            node.leafNodes = (node.leafNodes || []).concat(applied);
+          }
+        }
+      });
+    } else if (graphType === 'application-graph') {
+      const { applicationStatus, components } = this.props;
+      const services = (applicationStatus && applicationStatus.services) || [];
+      const componentMap = new Map<string, ApplicationComponent>();
+      const types: Record<string, string> = {};
+      components?.map((com) => {
+        componentMap.set(com.name, com);
+        types[com.name] = com.componentType;
+      });
+      services.map((s) => {
+        const cluster = s.cluster || 'local';
+        const namespace = s.namespace;
+        const name = `${cluster}/${namespace}`;
+        if (!clusterTree.get(name)) {
+          clusterTree.set(name, { resource: { name: name }, nodeType: 'target' });
+        }
+        const clusterNode = clusterTree.get(name);
+        if (clusterNode) {
+          const component = componentMap.get(s.name);
+          const dependencies = dependencyItems(s.name, applicationStatus?.dependencies, types).concat(
+            sourceReads(s.name, s.cluster, s.namespace, applicationStatus?.sources)
+          );
+          const componentNode = this.convertComponentNode(s, component, dependencies);
+          this.placements.set(placementKey(s.cluster, s.namespace, s.name), treeNodeKey(componentNode));
+          clusterNode.leafNodes = (clusterNode.leafNodes || []).concat(componentNode);
+        }
+      });
+      //this.generateTree(clusterTree, components || []);
+    }
+    const tree: TreeNode[] = [];
+    clusterTree.forEach((value: TreeNode) => {
+      tree.push(value);
+    });
+    return tree;
+  }
+
+  // placements are the component nodes buildClusterNode put on the graph, by
+  // placementKey, for the source nodes to link to.
+  placements = new Map<string, string>();
+
+  // buildSourceNodes are the Application's spec.sources bindings, each linked
+  // to the component placements that read it.
+  buildSourceNodes(): TreeNode[] {
+    const { applicationStatus } = this.props;
+    const withFlows = !!this.state.flows;
+    return (applicationStatus?.sources || []).map((source) => {
+      const { links, elsewhere } = sourceLinks(source, this.placements);
+      return {
+        nodeType: 'source',
+        resource: { name: source.name, kind: 'Source' },
+        source,
+        // Once the flows are read they join a source to its readers instead.
+        links: withFlows ? [] : links,
+        readersElsewhere: elsewhere,
+      };
+    });
+  }
+
+  buildTree(): TreeNode {
+    const { resources, env, application, graphType } = this.props;
+    const root: TreeNode = {
+      nodeType: 'app',
+      resource: {
+        name: env?.appDeployName || application?.name || '',
+        kind: 'Application',
+        apiVersion: 'core.oam.dev/v1beta1',
+        namespace: env?.appDeployNamespace || '',
+      },
+      leafNodes: this.buildClusterNode(resources, graphType),
+    };
+    if (graphType === 'application-graph') {
+      const sourceNodes = this.buildSourceNodes();
+      root.leafNodes = sourceNodes.concat(root.leafNodes || []);
+      const sourceKeys = new Map(sourceNodes.map((n) => [n.resource.name, treeNodeKey(n)]));
+      root.detached = flowNodes(this.state.flows || [], this.placements, sourceKeys);
+    }
+    return root;
+  }
+
+  onResourceDetailClick = (resource: ResourceTreeNode) => {
+    this.setState({ showResource: true, resource: resource });
+  };
+
+  render() {
+    const { env, application, graphType } = this.props;
+    const { showResource, resource, zoom } = this.state;
+    const data = this.buildTree();
+    return (
+      <div className="graph-frame">
+        <div className="graph-zoom">
+          <RowAction
+            icon={<AiOutlineMinus />}
+            label="Zoom out"
+            disabled={zoom <= 0.5}
+            onClick={() => this.setState({ zoom: Math.round((zoom - 0.1) * 10) / 10 })}
+          />
+          <button
+            type="button"
+            className="graph-zoom-level"
+            title={i18n.t('Reset zoom').toString()}
+            onClick={() => this.setState({ zoom: 1 })}
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <RowAction
+            icon={<IoMdAdd />}
+            label="Zoom in"
+            disabled={zoom >= 2}
+            onClick={() => this.setState({ zoom: Math.round((zoom + 0.1) * 10) / 10 })}
+          />
+        </div>
+        <div className={classNames('graph-container')}>
+          <ProjectContext.Provider value={application?.project?.name || ''}>
+            <TreeGraph
+              onResourceDetailClick={this.onResourceDetailClick}
+              appName={application?.name || ''}
+              envName={env?.name || ''}
+              node={data}
+              zoom={zoom}
+              nodesep={graphType === 'resource-graph' ? 50 : 80}
+            />
+          </ProjectContext.Provider>
+          <If condition={showResource && resource}>
+            {resource && (
+              <ShowResource
+                project={application?.project?.name || ''}
+                onClose={() => {
+                  this.setState({ showResource: false, resource: undefined });
+                }}
+                resource={resource}
+              />
+            )}
+          </If>
+        </div>
+      </div>
+    );
+  }
+}
+
+export default ApplicationGraph;

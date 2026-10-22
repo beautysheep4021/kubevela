@@ -1,0 +1,188 @@
+// The application's tabs run along the foot of its detail card, the current
+// one underlined, as the consoles' detail pages tab their parts.
+.app-tabs {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 0 16px;
+  overflow-x: auto;
+  border-top: 1px solid var(--c-divider);
+  &::-webkit-scrollbar {
+    height: 0;
+  }
+}
+
+.app-tabs .app-tab {
+  flex: none;
+  padding: 12px 10px 10px;
+  color: var(--c-text-2);
+  font-size: 14px;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+  &:hover {
+    color: var(--c-primary) !important;
+    text-decoration: none !important;
+  }
+  &.active {
+    color: var(--c-primary) !important;
+    font-weight: 500;
+    border-bottom-color: var(--c-primary);
+  }
+}
+
+// The tabs that configure the application, and those that deploy it: each run
+// set apart by a rule, its label quiet before its tabs.
+.app-tabs .app-tab-group {
+  display: flex;
+  flex: none;
+  align-items: center;
+  margin-left: 8px;
+  padding-left: 12px;
+  border-left: 1px solid var(--c-border);
+}
+
+.app-tabs .app-tab-group-label {
+  margin-right: 4px;
+  color: var(--c-text-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.app-tabs .app-tab-group-tabs {
+  display: flex;
+  align-items: center;
+}
+
+.app-tabs .app-tab-with-add {
+  display: inline-flex;
+  align-items: center;
+  .app-tab {
+    padding-right: 2px;
+  }
+}
+
+.app-tabs .app-tab-add {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 8px 0 2px;
+  padding: 2px;
+  color: var(--c-text-3);
+  font-size: 12px;
+  border-radius: var(--radius);
+  &:hover {
+    color: var(--c-primary);
+    background: var(--c-hover);
+  }
+}
+
+// The bar over one env's live view.
+.environment-bar {
+  margin-bottom: 16px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+}
+
+.environment-bar-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 16px;
+}
+
+.environment-bar .environment-bar-back {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--c-text-3);
+  font-size: 13px;
+  &:hover {
+    color: var(--c-text);
+  }
+}
+
+.environment-bar-name {
+  padding-left: 12px;
+  color: var(--c-text);
+  font-weight: 600;
+  font-size: 15px;
+  border-left: 1px solid var(--c-border);
+}
+
+.environment-bar-filters {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+  .next-select {
+    width: 220px;
+  }
+}
+
+.environment-bar-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  padding: 0 16px;
+  border-top: 1px solid var(--c-divider);
+}
+
+.environment-bar-tabs .environment-view {
+  margin-bottom: -1px;
+  padding: 10px 12px;
+  color: var(--c-text-2);
+  font-weight: 500;
+  font-size: 13px;
+  border-bottom: 2px solid transparent;
+  &:hover {
+    color: var(--c-text);
+  }
+  &.active {
+    color: var(--c-primary);
+    border-bottom-color: var(--c-primary);
+  }
+}
+
+.environment-bar-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+  padding: 6px 0;
+}
+
+// A tab's filters and its one line on what it holds, above its list.
+.app-tab-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+  .next-select {
+    width: 240px;
+  }
+}
+
+.app-tab-hint {
+  color: var(--c-text-3);
+  font-size: 13px;
+  line-height: 32px;
+}
+
+// A tab's list in its panel: the toolbar inset along the top, the table
+// edge to edge beneath it.
+.app-tab-panel {
+  > .list-toolbar {
+    margin: 0;
+    padding: 16px 20px 12px;
+    .next-select {
+      width: 220px;
+    }
+  }
+  > .next-table {
+    border-top: 1px solid var(--c-divider);
+  }
+}

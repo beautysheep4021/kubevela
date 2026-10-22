@@ -1,0 +1,55 @@
+@primaryColor: #0064c8;
+@whiteColor: white;
+@blackColor: black;
+.group-container {
+  margin-bottom: 16px;
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  visibility: visible;
+  &:hover {
+    border: 1px solid @primaryColor;
+  }
+  .group-title-container {
+    position: relative;
+    padding: 0 10px;
+    font-size: 14px;
+    background-color: transparent;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.12s;
+    .group-title.required::before {
+      margin-right: 4px;
+      color: #c80000;
+      color: var(--form-error-color, #c80000);
+      content: '*';
+    }
+    .group-title-desc {
+      color: #a6a6a6;
+      font-weight: normal;
+      font-size: 12px;
+    }
+    .icon {
+      position: absolute;
+      right: 10px;
+    }
+    .next-icon-arrow-up {
+      &::before {
+        font-size: 12px !important;
+      }
+    }
+  }
+  .group-box {
+    padding: 16px;
+    background-color: #fff;
+    border-radius: 5px;
+    transition: height 0.3s linear;
+  }
+  .group-box.disable {
+    height: 0;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    visibility: hidden;
+  }
+}

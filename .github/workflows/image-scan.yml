@@ -1,0 +1,29 @@
+name: "ImageScan"
+
+on:
+  push:
+    branches: [ main, release-* ]
+
+jobs:
+ images:
+  name: Image Scan
+  runs-on: ubuntu-latest
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@6ccd57f4c5d15bdc2fef309bd9fb6cc9db2ef1c6
+
+    - name: Build Vela Core image from Dockerfile
+      run: |
+        docker build -t docker.io/oamdev/vela-velaux:${{ github.sha }} .
+    - name: Run Trivy vulnerability scanner for velaux
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'docker.io/oamdev/vela-velaux:${{ github.sha }}'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'

@@ -1,0 +1,202 @@
+name: VelaUX APIServer Test
+
+on:
+  push:
+    branches:
+      - main
+      - release-*
+    tags:
+      - v*
+  workflow_dispatch: { }
+  pull_request:
+    branches:
+      - main
+      - release-*
+
+env:
+  # Common versions
+  GO_VERSION: '1.27.1'
+
+permissions:
+  contents: read
+
+jobs:
+
+  detect-noop:
+    runs-on: ubuntu-22.04
+    outputs:
+      noop: ${{ steps.noop.outputs.should_skip }}
+    steps:
+      - name: Detect No-op Changes
+        id: noop
+        uses: fkirc/skip-duplicate-actions@f75f66ce1886f00957d99748a42c724f4330bdcf
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          paths_ignore: '["**.md", "**.mdx", "**.png", "**.jpg"]'
+          do_not_skip: '["workflow_dispatch", "schedule", "push"]'
+        continue-on-error: true
+
+  server-unit-tests:
+    runs-on: ubuntu-22.04
+    needs: detect-noop
+    if: needs.detect-noop.outputs.noop != 'true'
+
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+        id: go
+
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@6ccd57f4c5d15bdc2fef309bd9fb6cc9db2ef1c6
+        with:
+          submodules: true
+
+      - name: Cache Go Dependencies
+        uses: actions/cache@v4
+        with:
+          path: .work/pkg
+          key: ${{ runner.os }}-pkg-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-pkg-
+
+      - name: Install ginkgo
+        run: |
+          go install github.com/onsi/ginkgo/v2/ginkgo@v2.23.4
+          echo "Ginkgo version:"
+          $(go env GOPATH)/bin/ginkgo version
+
+      - name : Set up MySQL
+        uses: mirromutth/mysql-action@v1.1
+        with:
+          mysql database: 'kubevela'
+          mysql root password: 'kubevelaSQL123'
+
+      - name: Set up Postgres
+        uses: Harmon758/postgresql-action@v1
+        with:
+          postgresql version: '11'
+          postgresql db: 'kubevela'
+          postgresql user: 'kubevela'
+          postgresql password: 'Kubevela-123'
+
+      - name: Start MongoDB
+        uses: supercharge/mongodb-github-action@5a87bd81f88e2a8b195f8b7b656f5cda1350815a # 1.11.0
+        with:
+          mongodb-version: '5.0'
+
+      - name: Install envtest binaries
+        run: |
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2
+          echo "KUBEBUILDER_ASSETS=$("$(go env GOPATH)/bin/setup-envtest" use 1.37.0 -p path)" >> "$GITHUB_ENV"
+
+      - name: Run api server unit test
+        run: make unit-test-server-ci
+      - name: Upload coverage report
+        uses: codecov/codecov-action@d9f34f8cd5cb3b3eb79b3e4b5dae3a16df499a70
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          file: ./coverage.txt
+          flags: apiserver-unittests
+          name: codecov-umbrella
+
+  server-e2e-tests:
+    # Branch protection requires this check by name. A job's name cannot read
+    # env, so the version is repeated here: bump both, and the required check.
+    name: server-e2e-tests (v1.26)
+    runs-on: ubuntu-22.04
+    needs: [ detect-noop ]
+    if: needs.detect-noop.outputs.noop != 'true'
+    env:
+      K8S_VERSION: v1.26
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-server-e2e-tests
+      cancel-in-progress: true
+
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+        id: go
+
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@6ccd57f4c5d15bdc2fef309bd9fb6cc9db2ef1c6
+        with:
+          submodules: true
+      - name: Build docker image
+        id: docker_build
+        uses: docker/build-push-action@1a162644f9a7e87d8f4b053101d1d9a712edc18c
+        with:
+          context: ./
+          build-args: |
+            GOPROXY=https://proxy.golang.org
+          file: ./Dockerfile.e2e
+          platforms: linux/amd64
+          push: false
+          tags: oamdev/velaux:latest
+
+      - name: Tear down K3d if exist
+        run: |
+          k3d cluster delete || true
+          k3d cluster delete worker || true
+
+      - name: Calculate K3d args
+        run: |
+          EGRESS_ARG=""
+          if [[ "$K8S_VERSION" == v1.26 ]]; then
+            EGRESS_ARG="--k3s-arg --egress-selector-mode=disabled@server:0"
+          fi
+          echo "EGRESS_ARG=${EGRESS_ARG}" >> $GITHUB_ENV 
+
+      - name: Setup K3d (Hub)
+        uses: nolar/setup-k3d-k3s@62c9d1bd2bc843275c85d2e7dcd696edc1160eee # v1.1.0
+        with:
+          channel: ${{ env.K8S_VERSION }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          k3d-args: ${{ env.EGRESS_ARG }}
+
+      - name: Setup K3d (Worker)
+        uses: nolar/setup-k3d-k3s@62c9d1bd2bc843275c85d2e7dcd696edc1160eee # v1.1.0
+        with:
+          channel: ${{ env.K8S_VERSION }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          k3d-name: worker
+          k3d-args: --kubeconfig-update-default=false --network=k3d-k3s-default ${{ env.EGRESS_ARG }}
+
+      - name: Kind Cluster (Worker)
+        run: |
+          internal_ip=$(docker network inspect k3d-k3s-default|jq ".[0].Containers"| jq -r '.[]| select(.Name=="k3d-worker-server-0")|.IPv4Address' | cut -d/ -f1)
+          k3d kubeconfig get worker > /tmp/worker.client.kubeconfig
+          cp /tmp/worker.client.kubeconfig /tmp/worker.kubeconfig
+          sed -i "s/0.0.0.0:[0-9]\+/$internal_ip:6443/"  /tmp/worker.kubeconfig
+
+      - name: Setup KubeVela core environment 
+        run: |
+          make e2e-setup-core
+          make start-addon-mock-server
+          make load-image
+          make enable-addon-no-replicas
+          
+      - name: Run server e2e test
+        run: |
+          export ALIYUN_ACCESS_KEY_ID=${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+          export ALIYUN_ACCESS_KEY_SECRET=${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+          export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          docker run --rm -v `pwd`/e2e-plugins:/plugins oamdev/velaux:latest cp -r -a /app/velaux/plugins/ /plugins/
+          make e2e-server-test
+
+      - name: Test addon enable
+        run: |
+          make enable-addon
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@e28ff129e5465c2c0dcc6f003fc735cb6ae0c673
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: /tmp/e2e_apiserver_test.out
+          flags: server-e2e-tests
+          name: codecov-umbrella
+
+      - name: Clean e2e profile
+        run: rm /tmp/e2e_apiserver_test.out

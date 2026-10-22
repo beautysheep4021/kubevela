@@ -1,0 +1,40 @@
+.addons-tabs > .next-tabs-content {
+  padding-top: 16px;
+}
+
+// The catalog's cards take the console's look: square corners, the status
+// on a thin top edge rather than a thick left one.
+.addon-catalog {
+  .addon-catalog-message {
+    margin: 0 20px 12px;
+  }
+  .resource-grid {
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
+    padding: 4px 20px 20px;
+  }
+  .resource-card {
+    gap: 12px;
+    padding: 16px 18px 14px;
+    border: 1px solid var(--c-border);
+    border-top: 2px solid var(--tone, var(--c-border));
+    border-radius: var(--radius);
+    &:hover {
+      border-color: var(--c-primary-hover);
+      border-top-color: var(--tone, var(--c-primary-hover));
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+    }
+  }
+  .resource-card-icon {
+    background: var(--c-primary-bg);
+    border-radius: var(--radius);
+  }
+  .resource-card-title > span:first-child {
+    color: var(--c-text);
+    font-size: 15px;
+  }
+}
+
+.addons-tab-panel {
+  padding: 16px 20px;
+}

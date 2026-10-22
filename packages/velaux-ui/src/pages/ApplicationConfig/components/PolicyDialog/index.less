@@ -1,0 +1,18 @@
+.policy-item {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  margin: 8px;
+  padding: 16px;
+  text-align: center;
+  border: 1px solid #dedede;
+  cursor: pointer;
+  &:hover {
+    color: var(--primary-color);
+    border: 2px solid var(--primary-color);
+  }
+}
+.policy-item.active {
+  color: var(--primary-color);
+  border: 2px solid var(--primary-color);
+}

@@ -1,0 +1,471 @@
+/*
+Copyright 2022 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"sort"
+
+	"github.com/pkg/errors"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/oam-dev/kubevela/apis/types"
+	"github.com/oam-dev/kubevela/pkg/config"
+	paramschema "github.com/oam-dev/kubevela/pkg/schema"
+	"github.com/oam-dev/kubevela/pkg/utils/apply"
+	"github.com/oam-dev/kubevela/pkg/utils/schema"
+
+	apis "github.com/kubevela/velaux/pkg/server/interfaces/api/dto/v1"
+	"github.com/kubevela/velaux/pkg/server/utils"
+	"github.com/kubevela/velaux/pkg/server/utils/bcode"
+)
+
+// configScopeProject is the scope of a config a project owns.
+const (
+	configScopeProject = "project"
+)
+
+// ConfigService handle CRUD of config and template
+type ConfigService interface {
+	ListTemplates(ctx context.Context, project, scope string) ([]*apis.ConfigTemplate, error)
+	GetTemplate(ctx context.Context, tem config.NamespacedName) (*apis.ConfigTemplateDetail, error)
+	CreateConfig(ctx context.Context, project string, req apis.CreateConfigRequest) (*apis.Config, error)
+	UpdateConfig(ctx context.Context, project string, name string, req apis.UpdateConfigRequest) (*apis.Config, error)
+	ListConfigs(ctx context.Context, project, template string, withProperties bool) ([]*apis.Config, error)
+	GetConfig(ctx context.Context, project, name string) (*apis.Config, error)
+	DeleteConfig(ctx context.Context, project, name string) error
+	CreateConfigDistribution(ctx context.Context, project string, req apis.CreateConfigDistributionRequest) error
+	DeleteConfigDistribution(ctx context.Context, project, name string) error
+	ListConfigDistributions(ctx context.Context, project string) ([]*config.Distribution, error)
+}
+
+var (
+	// GlobalConfigNamespace is the namespace for global config, global config should be seen by all projects
+	GlobalConfigNamespace = types.DefaultKubeVelaNS
+	// NoProject is the project name to pass when query global config
+	NoProject = ""
+)
+
+func isGlobal(project string) bool {
+	return project == NoProject
+}
+
+// NewConfigService returns a config use case
+func NewConfigService() ConfigService {
+	return &configServiceImpl{}
+}
+
+type configServiceImpl struct {
+	KubeClient     client.Client    `inject:"kubeClient"`
+	ProjectService ProjectService   `inject:""`
+	Factory        config.Factory   `inject:"configFactory"`
+	Apply          apply.Applicator `inject:"apply"`
+}
+
+// ListTemplates list the config templates
+func (u *configServiceImpl) ListTemplates(ctx context.Context, project, scope string) ([]*apis.ConfigTemplate, error) {
+	listCtx := utils.WithProject(ctx, NoProject)
+	queryTemplates, err := u.Factory.ListTemplates(listCtx, GlobalConfigNamespace, scope)
+	if err != nil {
+		return nil, err
+	}
+	if scope == configScopeProject && project != "" {
+		pro, err := u.ProjectService.GetProject(ctx, project)
+		if err != nil {
+			return nil, err
+		}
+		templates, err := u.Factory.ListTemplates(ctx, pro.GetNamespace(), scope)
+		if err != nil {
+			return nil, err
+		}
+		queryTemplates = append(queryTemplates, templates...)
+	}
+	templates, err := u.templateCRs(listCtx, GlobalConfigNamespace, scope)
+	if err != nil {
+		return nil, err
+	}
+	if scope == configScopeProject && project != "" {
+		pro, err := u.ProjectService.GetProject(ctx, project)
+		if err != nil {
+			return nil, err
+		}
+		projectTemplates, err := u.templateCRs(ctx, pro.GetNamespace(), scope)
+		if err != nil {
+			return nil, err
+		}
+		templates = append(templates, projectTemplates...)
+	}
+	// A ConfigTemplate shadows a legacy template of the same name, as the
+	// factory reads the ConfigTemplate first.
+	crd := map[config.NamespacedName]bool{}
+	for _, t := range templates {
+		crd[config.NamespacedName{Name: t.Name, Namespace: t.Namespace}] = true
+	}
+	for _, t := range queryTemplates {
+		if crd[t.NamespacedName] {
+			continue
+		}
+		templates = append(templates, &apis.ConfigTemplate{
+			Alias:       t.Alias,
+			Name:        t.Name,
+			Description: t.Description,
+			Namespace:   t.Namespace,
+			Scope:       t.Scope,
+			Sensitive:   t.Sensitive,
+			CreateTime:  t.CreateTime,
+			Legacy:      true,
+		})
+	}
+	sort.SliceStable(templates, func(i, j int) bool {
+		return templates[i].Alias < templates[j].Alias
+	})
+	return templates, nil
+}
+
+// GetTemplate detail a template
+func (u *configServiceImpl) GetTemplate(ctx context.Context, tem config.NamespacedName) (*apis.ConfigTemplateDetail, error) {
+	if tem.Namespace == "" {
+		tem.Namespace = GlobalConfigNamespace
+	}
+	getCtx := utils.WithProject(ctx, NoProject)
+	template, err := u.Factory.LoadTemplate(getCtx, tem.Name, tem.Namespace)
+	if err != nil {
+		if errors.Is(err, config.ErrTemplateNotFound) {
+			return nil, bcode.ErrTemplateNotFound
+		}
+		return nil, err
+	}
+	defaultUISchema := configTemplateUISchema(ctx, template)
+	t := &apis.ConfigTemplateDetail{
+		ConfigTemplate: apis.ConfigTemplate{
+			Alias:       template.Alias,
+			Name:        template.Name,
+			Description: template.Description,
+			Namespace:   template.Namespace,
+			Scope:       template.Scope,
+			Sensitive:   template.Sensitive,
+			CreateTime:  template.CreateTime,
+		},
+		APISchema: template.Schema,
+		// TODO: Support to define the custom UI schema in the template cue script.
+		// The custom UI schema is a ConfigMap beside the template, in its namespace.
+		UISchema: renderCustomUISchema(ctx, u.KubeClient, tem.Namespace, template.Name, "config", defaultUISchema),
+	}
+	return t, nil
+}
+
+func (u *configServiceImpl) CreateConfig(ctx context.Context, project string, req apis.CreateConfigRequest) (*apis.Config, error) {
+	ns := GlobalConfigNamespace
+	if !isGlobal(project) {
+		pro, err := u.ProjectService.GetProject(ctx, project)
+		if err != nil {
+			return nil, err
+		}
+		ns = pro.GetNamespace()
+	}
+	exist, err := u.Factory.IsExist(ctx, ns, req.Name)
+	if err != nil {
+		klog.Errorf("check config name exist fail %s", err.Error())
+		return nil, bcode.ErrConfigExist
+	}
+	if existing, err := u.configCR(ctx, ns, req.Name); err != nil || existing != nil {
+		exist = true
+	}
+	if exist {
+		return nil, bcode.ErrConfigExist
+	}
+	var properties = make(map[string]interface{})
+	if err := json.Unmarshal([]byte(req.Properties), &properties); err != nil {
+		return nil, err
+	}
+	if req.Template.Namespace == "" {
+		req.Template.Namespace = GlobalConfigNamespace
+	}
+	ct, err := u.templateCR(ctx, config.NamespacedName(req.Template))
+	if err != nil {
+		return nil, err
+	}
+	if ct != nil {
+		if err := u.validateConfigCR(ctx, ct, req.Name, ns, properties); err != nil {
+			return nil, err
+		}
+		c, err := u.writeConfigCR(ctx, ct, nil, req.Name, ns, req.Alias, req.Description, properties)
+		if err != nil {
+			return nil, err
+		}
+		return convertConfigCR(project, *c, true), nil
+	}
+	configItem, err := u.Factory.ParseConfig(ctx, config.NamespacedName(req.Template), config.Metadata{
+		NamespacedName: config.NamespacedName{Name: req.Name, Namespace: ns},
+		Properties:     properties,
+		Alias:          req.Alias, Description: req.Description,
+	})
+	if err != nil {
+		if errors.Is(err, config.ErrTemplateNotFound) {
+			return nil, bcode.ErrTemplateNotFound
+		}
+		return nil, err
+	}
+	if err := u.Factory.CreateOrUpdateConfig(ctx, configItem, ns); err != nil {
+		return nil, err
+	}
+	return convertConfig(project, *configItem), nil
+}
+
+func (u *configServiceImpl) UpdateConfig(ctx context.Context, project string, name string, req apis.UpdateConfigRequest) (*apis.Config, error) {
+	ns := GlobalConfigNamespace
+	if !isGlobal(project) {
+		pro, err := u.ProjectService.GetProject(ctx, project)
+		if err != nil {
+			return nil, err
+		}
+		ns = pro.GetNamespace()
+	}
+
+	if c, err := u.configCR(ctx, ns, name); err != nil {
+		return nil, err
+	} else if c != nil {
+		return u.updateConfigCR(ctx, project, c, req)
+	}
+
+	it, err := u.Factory.GetConfig(ctx, ns, name, false)
+	if err != nil {
+		if errors.Is(err, config.ErrSensitiveConfig) {
+			return nil, bcode.ErrSensitiveConfig
+		}
+		if errors.Is(err, config.ErrConfigNotFound) {
+			return nil, bcode.ErrConfigNotFound
+		}
+		return nil, err
+	}
+
+	var properties = make(map[string]interface{})
+	if err := json.Unmarshal([]byte(req.Properties), &properties); err != nil {
+		return nil, err
+	}
+	configItem, err := u.Factory.ParseConfig(ctx,
+		it.Template.NamespacedName,
+		config.Metadata{NamespacedName: config.NamespacedName{Name: it.Name, Namespace: ns}, Alias: req.Alias, Description: req.Description, Properties: properties})
+	if err != nil {
+		return nil, err
+	}
+	if err := u.Factory.CreateOrUpdateConfig(ctx, configItem, ns); err != nil {
+		if errors.Is(err, config.ErrChangeTemplate) {
+			return nil, bcode.ErrChangeTemplate
+		}
+		if errors.Is(err, config.ErrChangeSecretType) {
+			return nil, bcode.ErrChangeSecretType
+		}
+		return nil, err
+	}
+	return convertConfig(project, *configItem), nil
+}
+
+// ListConfigs query the available configs.
+// If the project is not empty, it means query all usable configs for this project.
+func (u *configServiceImpl) ListConfigs(ctx context.Context, project string, template string, withProperties bool) ([]*apis.Config, error) {
+	var list []*apis.Config
+	scope := ""
+	var projectNamespace string
+	listCtx := utils.WithProject(ctx, NoProject)
+	if !isGlobal(project) {
+		scope = configScopeProject
+		pro, err := u.ProjectService.GetProject(ctx, project)
+		if err != nil {
+			return nil, err
+		}
+		projectNamespace = pro.GetNamespace()
+		// query the configs belong to the project scope from the system namespace
+		configs, err := u.Factory.ListConfigs(listCtx, pro.GetNamespace(), template, "", true)
+		if err != nil {
+			return nil, err
+		}
+		for i := range configs {
+			list = append(list, convertConfig(project, *configs[i]))
+		}
+		crs, err := u.configCRs(listCtx, pro.GetNamespace(), template)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range crs {
+			list = append(list, convertConfigCR(project, c, withProperties))
+		}
+	}
+
+	crs, err := u.configCRs(listCtx, GlobalConfigNamespace, template)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range crs {
+		item := convertConfigCR(project, c, withProperties)
+		item.Shared = !isGlobal(project)
+		list = append(list, item)
+	}
+
+	configs, err := u.Factory.ListConfigs(listCtx, GlobalConfigNamespace, template, scope, true)
+	if err != nil {
+		return nil, err
+	}
+	for i := range configs {
+		if projectNamespace != "" {
+			if err := u.Factory.MergeDistributionStatus(ctx, configs[i], projectNamespace); err != nil && !errors.Is(err, config.ErrNotFoundDistribution) {
+				klog.Warningf("fail to merge the status %s:%s", configs[i].Name, err.Error())
+			}
+		}
+		item := convertConfig(project, *configs[i])
+		item.Shared = true
+		if !withProperties {
+			item.Properties = nil
+		}
+		list = append(list, item)
+	}
+	return list, nil
+}
+
+// CreateConfigDistribution distribute the configs to the target namespaces.
+func (u *configServiceImpl) CreateConfigDistribution(ctx context.Context, project string, req apis.CreateConfigDistributionRequest) error {
+	pro, err := u.ProjectService.GetProject(ctx, project)
+	if err != nil {
+		return err
+	}
+	if len(req.Configs) == 0 || len(req.Targets) == 0 {
+		return bcode.ErrNoConfigOrTarget
+	}
+	var targets []*config.ClusterTarget
+	for _, t := range req.Targets {
+		if t.Namespace != "" && t.ClusterName != "" {
+			targets = append(targets, &config.ClusterTarget{Namespace: t.Namespace, ClusterName: t.ClusterName})
+		}
+	}
+
+	var configs []*config.NamespacedName
+	for _, t := range req.Configs {
+		if t.Name != "" {
+			configs = append(configs, &config.NamespacedName{Namespace: t.Namespace, Name: t.Name})
+		}
+	}
+	return u.Factory.CreateOrUpdateDistribution(ctx, pro.GetNamespace(), req.Name, &config.CreateDistributionSpec{
+		Configs: configs,
+		Targets: targets,
+	})
+}
+
+// ListConfigDistributions list the all distributions
+func (u *configServiceImpl) ListConfigDistributions(ctx context.Context, project string) ([]*config.Distribution, error) {
+	pro, err := u.ProjectService.GetProject(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	return u.Factory.ListDistributions(ctx, pro.GetNamespace())
+}
+
+// DeleteConfigDistribution delete a distribution
+func (u *configServiceImpl) DeleteConfigDistribution(ctx context.Context, project, name string) error {
+	pro, err := u.ProjectService.GetProject(ctx, project)
+	if err != nil {
+		return err
+	}
+	if err := u.Factory.DeleteDistribution(ctx, pro.GetNamespace(), name); err != nil {
+		if errors.Is(err, config.ErrNotFoundDistribution) {
+			return bcode.ErrNotFoundDistribution
+		}
+		return err
+	}
+	return nil
+}
+
+func convertConfig(project string, config config.Config) *apis.Config {
+	return &apis.Config{
+		Template:    config.Template.NamespacedName,
+		Sensitive:   config.Template.Sensitive,
+		Name:        config.Name,
+		Namespace:   config.Namespace,
+		Project:     project,
+		Alias:       config.Alias,
+		Description: config.Description,
+		CreatedTime: &config.CreateTime,
+		Properties:  config.Properties,
+		Secret:      config.Secret,
+		Targets:     config.Targets,
+		Legacy:      true,
+	}
+}
+
+func (u *configServiceImpl) GetConfig(ctx context.Context, project, name string) (*apis.Config, error) {
+	ns := GlobalConfigNamespace
+	if !isGlobal(project) {
+		pro, err := u.ProjectService.GetProject(ctx, project)
+		if err != nil {
+			return nil, err
+		}
+		ns = pro.GetNamespace()
+	}
+
+	if c, err := u.configCR(ctx, ns, name); err != nil {
+		return nil, err
+	} else if c != nil {
+		return convertConfigCR(project, *c, true), nil
+	}
+
+	it, err := u.Factory.GetConfig(ctx, ns, name, true)
+	if err != nil {
+		switch {
+		case errors.Is(err, config.ErrSensitiveConfig):
+			return nil, bcode.ErrSensitiveConfig
+		case errors.Is(err, config.ErrConfigNotFound):
+			if !isGlobal(project) {
+				// Try to get global config if the config is not found in the project scope.
+				return u.GetConfig(ctx, NoProject, name)
+			}
+			return nil, bcode.ErrConfigNotFound
+		default:
+			return nil, err
+		}
+	}
+	return convertConfig(project, *it), nil
+}
+
+func (u *configServiceImpl) DeleteConfig(ctx context.Context, project, name string) error {
+	ns := GlobalConfigNamespace
+	if !isGlobal(project) {
+		pro, err := u.ProjectService.GetProject(ctx, project)
+		if err != nil {
+			return err
+		}
+		ns = pro.GetNamespace()
+	}
+	if c, err := u.configCR(ctx, ns, name); err != nil {
+		return err
+	} else if c != nil {
+		// The controller removes the Secret and outputs it owns.
+		return client.IgnoreNotFound(u.KubeClient.Delete(ctx, c))
+	}
+	return u.Factory.DeleteConfig(ctx, ns, name)
+}
+
+// configTemplateUISchema generates the form from the template's parameter,
+// or derives it from the OpenAPI schema where the parameter cannot be read.
+func configTemplateUISchema(ctx context.Context, template *config.Template) []*schema.UIParameter {
+	ps, err := paramschema.GenerateParameterSchemasAt(ctx, string(template.Template), "template")
+	if err == nil {
+		return ps.UI
+	}
+	klog.Warningf("deriving the form of config template %s from its OpenAPI schema: %s", template.Name, err.Error())
+	return renderDefaultUISchema(template.Schema)
+}

@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "jsx": "react",
+    "baseUrl": "./",
+    "isolatedModules": true,
+    "declarationDir": "./compiled",
+    "emitDeclarationOnly": true,
+    "resolveJsonModule": true,
+    "rootDirs": [
+      "."
+    ],
+    "paths": {
+      "@velaux/ui": [
+        "."
+      ]
+    },
+    "lib": [
+      "es2016",
+      "DOM",
+      "ES2021.String"
+    ]
+  },
+  "exclude": [
+    "dist/**/*"
+  ],
+  "extends": "@grafana/tsconfig",
+  "include": [
+    "src/**/*.ts*",
+    "images.d.ts",
+    "src/types.ts"
+  ],
+  // override for storybook which uses ts-node to compile main.ts / preview.ts files.
+  "ts-node": {
+    "compilerOptions": {
+      "isolatedModules": false,
+      "resolveJsonModule": true,
+      "module": "commonjs"
+    }
+  }
+}

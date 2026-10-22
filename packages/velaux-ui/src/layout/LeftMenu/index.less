@@ -1,0 +1,176 @@
+// The menu: foldable sections, each a list of items; the current page is
+// tinted with an accent bar on its left edge, as the cloud consoles mark it.
+
+.slide-wrapper {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font);
+  ul,
+  li {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+}
+
+.nav-container {
+  margin-bottom: 2px;
+  .main-nav {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    height: 36px;
+    padding: 0 14px 0 16px;
+    color: var(--sb-text-strong);
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    user-select: none;
+    svg {
+      color: var(--sb-muted);
+    }
+    &:hover {
+      background: var(--sb-hover);
+    }
+    // A folded section holding the current page says so.
+    &.active .main-nav-text {
+      color: var(--sb-accent);
+    }
+  }
+  .main-nav-text {
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .main-nav-icon {
+    color: #f7ba1e !important;
+  }
+  .sub-wrapper {
+    padding-bottom: 4px;
+  }
+}
+
+.menu-item,
+.menu-item-active {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 12px 0 28px;
+  color: var(--sb-text) !important;
+  font-size: 13px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  svg {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    color: var(--sb-muted);
+  }
+  &:hover {
+    color: var(--sb-text-strong) !important;
+    text-decoration: none !important;
+    background-color: var(--sb-hover);
+    .menu-item-star {
+      visibility: visible;
+    }
+  }
+}
+
+.menu-item-active {
+  color: var(--sb-active-text) !important;
+  font-weight: 500;
+  background-color: var(--sb-active);
+  &::before {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 3px;
+    background-color: var(--sb-accent);
+    content: '';
+  }
+  svg {
+    color: var(--sb-accent);
+  }
+  &:hover {
+    color: var(--sb-active-text) !important;
+    background-color: var(--sb-active);
+  }
+}
+
+.menu-item-body {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+}
+
+.menu-item-text {
+  margin-left: 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+// The star shows on hover, and stays on an item already starred.
+.menu-item-star {
+  display: flex;
+  visibility: hidden;
+  padding: 2px;
+  cursor: pointer;
+  svg {
+    width: 14px;
+    height: 14px;
+    color: var(--sb-muted);
+  }
+  &.on {
+    visibility: visible;
+    svg {
+      color: #f7ba1e;
+    }
+  }
+}
+
+.collapsed {
+  .menu-item,
+  .menu-item-active {
+    justify-content: center;
+    padding: 0;
+  }
+  .menu-item-text {
+    display: none;
+  }
+  .menu-item-body {
+    flex: none;
+  }
+  .nav-container + .nav-container {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--sb-border);
+  }
+}
+
+.menu-empty {
+  padding: 16px;
+  color: var(--sb-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+// An item not built yet: greyed out, leading nowhere.
+.menu-item-coming-soon {
+  cursor: default;
+  opacity: 0.45;
+  &:hover {
+    background: transparent;
+  }
+}
+
+.menu-item-hint-name {
+  font-weight: 600;
+}
+.menu-item-hint-name + .menu-item-hint-soon {
+  margin-top: 2px;
+  opacity: 0.75;
+}
