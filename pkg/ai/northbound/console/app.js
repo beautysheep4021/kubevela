@@ -1,6 +1,7 @@
 (function () {
   'use strict';
-  const S = ConsoleState, E = S.escape, page = document.getElementById('page');
+  const S = ConsoleState, U = ConsoleUI, E = S.escape, page = document.getElementById('page');
+  const base = U.basePath(document.body.dataset.basePath);
   const identity = {namespace:document.body.dataset.accountNamespace, tenant:document.body.dataset.accountTenant, username:document.body.dataset.accountUsername};
   const demo = new URLSearchParams(location.search).get('demo') === 'local';
   const modal = document.getElementById('modal');
@@ -11,8 +12,8 @@
   let modelOptions = [], datasetOptions = [], assetError = '', assetLoading = false, result = null, modalAction = null, lastHash = '', uncertain = false;
   let returningList = {jobs:'#/jobs',services:'#/services'}, modalBusy = false, logVersion = 0, pendingNavigation = '';
   let uploadedAssets = [], uploadError = '', uploadLoading = false, uploadListVersion = 0, uploadController = null;
-  let modalVersion = 0;
-  const client = ConsoleAPI.create({...identity,demo,onUnauthorized:expired});
+  let modalVersion = 0, listPage = 1, listSize = 10, presetChoice = '';
+  const client = ConsoleAPI.create({...identity,demo,basePath:base,onUnauthorized:expired});
   const request = (path, init) => client.request(path, init);
   const apiRoot = '/api/v1/ai';
   const listPath = entity => `${apiRoot}/${entity}?namespace=${encodeURIComponent(identity.namespace)}`;
@@ -22,7 +23,7 @@
   const button = (action, label, symbol, primary = false) => `<button type="button" class="button${primary ? ' primary' : ''}" data-action="${action}">${symbol ? icon(symbol) : ''}${E(label)}</button>`;
   const iconButton = (action, label, symbol) => `<button type="button" class="icon-button" data-action="${action}" title="${E(label)}" aria-label="${E(label)}">${icon(symbol)}</button>`;
   const badge = (item, type) => { const s = S.status(item,type || S.kind(item)); return `<span class="badge ${s.tone}">${E(s.label)}</span>`; };
-  const sample = item => demo || S.example(item) ? '<span class="badge warn">示例</span>' : '';
+  const sample = item => demo || S.example(item) ? '<span class="tag warn">示例</span>' : '';
   const time = value => value && !Number.isNaN(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN',{hour12:false}) : '未提供';
   const json = value => `<pre class="config-output">${E(JSON.stringify(value,null,2))}</pre>`;
   function icons() { if (globalThis.lucide) lucide.createIcons(); }
@@ -32,7 +33,7 @@
     if(uploadController)uploadController.abort();uploadController=null;
     clearTimeout(timer); routeVersion++; items=[]; detail=null; draft=null; dirty=false; modelOptions=[]; datasetOptions=[];
     if (modal.open) modal.close();
-    page.innerHTML='<div class="empty-state"><h1>会话已失效或账号已切换</h1><a class="button primary" href="/login'+(demo?'?demo=local':'')+'">重新登录</a></div>';
+    page.innerHTML='<div class="empty-state"><h1>会话已失效或账号已切换</h1><a class="button primary" href="'+base+'/login'+(demo?'?demo=local':'')+'">重新登录</a></div>';
   }
   function errorText(err) {
     if (err.status === 403) return '当前账号无权访问此资源。';
@@ -41,31 +42,49 @@
     return err.message || '请求失败，请重试。';
   }
   function heading(title, actions='') { return `<div class="page-heading"><div><div class="eyebrow">${E(identity.tenant)} / ${E(titles[route.section])}</div><h1>${E(title)}</h1></div><div class="actions">${actions}</div></div>`; }
+  // Each list opens with what it is for and the steps to use it.
+  const guides = {
+    overview:['工作台','提交训练、评测与批处理任务，部署在线服务，并跟踪它们的运行状态和产物。',[['database','准备资产','上传或登记数据集，登记已有模型'],['list-checks','提交任务或部署服务','选择用途、运行配置与资源规格'],['activity','观测与交付','查看运行状态、日志和产物，发布为服务']]],
+    jobs:['任务','在工作空间内运行训练、评测、批处理与离线推理任务。',[['database','准备数据集与模型','在数据集与模型页上传或登记资产'],['list-plus','创建任务','选择用途、输入资产、镜像与资源规格'],['file-check','查看运行与结果','跟踪状态与日志，读取结果并登记为模型']]],
+    services:['在线服务','把模型部署为可调用的在线服务或智能体服务。',[['box','选择模型','从模型资产中选择要部署的版本'],['rocket','部署服务','配置运行时、副本数、端口与资源规格'],['activity','调用与观测','检查服务访问，查看日志与运行实例']]],
+    models:['模型','管理工作空间内的模型资产：登记、评测、训练产物与部署。',[['box','登记或训练模型','登记已有模型，或由训练任务产出'],['flask-conical','评测模型','运行评测任务并同步评测结果'],['rocket','部署服务','将通过评测的模型部署为在线服务']]],
+    datasets:['数据集','上传或登记训练、评测所用的数据集。',[['upload','上传或登记','上传 JSONL 文件，或登记已有数据地址'],['eye','校验与预览','查看行数、格式与样本预览'],['play','用于训练与评测','在创建任务时选择该数据集']]],
+  };
+  const guide = section => U.guide('user-'+section,...guides[section]);
+  // paged is the page of rows a list shows, with its pager beneath.
+  function paged(rows, render) {
+    const p=U.paginate(rows,listPage,listSize);listPage=p.page;
+    return render(p.rows)+U.pager(p);
+  }
   function empty(title, action='') { return `<div class="empty-state">${icon('inbox')}<h2>${E(title)}</h2>${action}</div>`; }
   function notice(message, retry='refresh') { return `<div class="notice error" role="alert"><span>${E(message)}</span>${retry ? button(retry,'重试','refresh-cw') : ''}</div>`; }
   function purpose(item) { const m = item.aiMetadata || {}; return item.purpose || item.jobKind || m['ai.oam.dev/purpose'] || m['ai.oam.dev/job-kind'] || m['ai.oam.dev/task-type'] || (S.kind(item)==='AIService' ? 'service' : ''); }
-  function workTable(rows, fixedType) {
+  function workTable(rows, fixedType, pages=false) {
     if (!rows.length) return empty(route.query || route.filter || route.purpose ? '没有符合筛选条件的记录' : '暂无记录',button(fixedType === 'AIService' ? 'new-service' : 'new-job',fixedType === 'AIService' ? '部署服务' : '创建任务','plus',true));
-    return `<div class="table-wrap"><table><thead><tr><th>名称</th><th>用途</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${rows.map(item=>{
-      const type = fixedType || S.kind(item), name = E(item.name);
-      return `<tr><td><a class="name-link" href="${detailHash(type,item.namespace,item.name)}">${name}</a><div class="subtle">${E(type)} ${sample(item)}</div></td><td>${E(purposes[purpose(item)] || purpose(item) || '未提供')}</td><td>${badge(item,type)}</td><td>${E(time(item.createdAt))}</td><td><a class="icon-button" href="${detailHash(type,item.namespace,item.name)}" title="查看 ${name}" aria-label="查看 ${name}">${icon('arrow-up-right')}</a></td></tr>`;
+    const table = list => `<div class="table-wrap"><table><thead><tr><th>名称</th><th>用途</th><th>状态</th><th>创建时间</th><th class="col-actions">操作</th></tr></thead><tbody>${list.map(item=>{
+      const type = fixedType || S.kind(item), href = detailHash(type,item.namespace,item.name);
+      return `<tr><td><a class="name-link" href="${href}">${E(item.name)}</a><div class="subtle">${E(type)} ${sample(item)}</div></td><td>${E(purposes[purpose(item)] || purpose(item) || '未提供')}</td><td>${badge(item,type)}</td><td>${E(time(item.createdAt))}</td><td class="col-actions">${U.rowLinks([{label:'详情',href,aria:'查看 '+item.name},{label:'日志',href:href+'?tab=logs'},{label:type==='AIJob'?'结果':'访问',href:href+'?tab=result'}])}</td></tr>`;
     }).join('')}</tbody></table></div>`;
+    return pages ? paged(rows,table) : table(rows);
   }
   function filters() {
-    return `<div class="filters"><label><span class="sr-only">搜索名称</span><input id="search" type="search" placeholder="搜索名称" value="${E(route.query)}"></label><label><span class="sr-only">筛选状态</span><select id="status-filter">${[['','全部状态'],['running','运行中'],['ready','已就绪'],['pending','等待 / 部署中'],['succeeded','已完成'],['failed','失败'],['unknown','状态待确认']].map(([v,l])=>`<option value="${v}"${route.filter===v?' selected':''}>${l}</option>`).join('')}</select></label>${route.section==='jobs'?`<label><span class="sr-only">筛选用途</span><select id="purpose-filter"><option value="">全部用途</option>${['training','evaluation','batch','offline-inference'].map(v=>`<option value="${v}"${route.purpose===v?' selected':''}>${purposes[v]}</option>`).join('')}</select></label>`:''}<span class="updated">${updated ? '更新于 '+E(updated) : ''}</span>${iconButton('refresh','刷新列表','refresh-cw')}</div>`;
+    const create = route.section==='jobs'?button('new-job','创建任务','plus',true):button('new-service','部署服务','plus',true);
+    return `<div class="filters"><label class="search-box"><span class="sr-only">搜索名称</span>${icon('search')}<input id="search" type="search" placeholder="搜索名称" value="${E(route.query)}"></label><label><span class="sr-only">筛选状态</span><select id="status-filter">${[['','全部状态'],['running','运行中'],['ready','已就绪'],['pending','等待 / 部署中'],['succeeded','已完成'],['failed','失败'],['unknown','状态待确认']].map(([v,l])=>`<option value="${v}"${route.filter===v?' selected':''}>${l}</option>`).join('')}</select></label>${route.section==='jobs'?`<label><span class="sr-only">筛选用途</span><select id="purpose-filter"><option value="">全部用途</option>${['training','evaluation','batch','offline-inference'].map(v=>`<option value="${v}"${route.purpose===v?' selected':''}>${purposes[v]}</option>`).join('')}</select></label>`:''}<div class="toolbar-end"><span class="updated">${updated ? '更新于 '+E(updated) : ''}</span>${iconButton('refresh','刷新列表','refresh-cw')}${create}</div></div>`;
   }
   function filtered(rows) {return rows.filter(i=>(i.name || '').toLowerCase().includes(route.query.toLowerCase()) && (!route.filter || S.status(i,S.kind(i)).key===route.filter) && (!route.purpose || purpose(i)===route.purpose));}
   function overview() {
     const jobs=items.filter(i=>S.kind(i)==='AIJob'), services=items.filter(i=>S.kind(i)==='AIService');
     const failed=items.filter(i=>S.status(i,S.kind(i)).key==='failed');
-    return `<div class="summary-strip">${[[jobs.length,'任务总数'],[jobs.filter(i=>S.status(i,'AIJob').key==='running').length,'运行中任务'],[services.filter(i=>S.status(i,'AIService').key==='ready').length,'就绪服务'],[failed.length,'失败项']].map(([n,l])=>`<div class="summary-item"><strong>${n}</strong><span>${l}</span></div>`).join('')}</div>${failed.length?`<div class="section-head"><h2>需要处理</h2></div>${workTable(failed)}`:''}<div class="section-head"><h2>最近任务</h2><a href="#/jobs">全部任务 ${icon('arrow-right')}</a></div>${workTable(jobs.slice(0,5),'AIJob')}<div class="section-head"><h2>在线服务</h2><a href="#/services">全部服务 ${icon('arrow-right')}</a></div>${workTable(services.slice(0,5),'AIService')}`;
+    return `<div class="summary-strip">${[[jobs.length,'任务总数'],[jobs.filter(i=>S.status(i,'AIJob').key==='running').length,'运行中任务'],[services.filter(i=>S.status(i,'AIService').key==='ready').length,'就绪服务'],[failed.length,'失败项']].map(([n,l])=>`<div class="summary-item"><strong>${n}</strong><span>${l}</span></div>`).join('')}</div>${failed.length?U.panel(workTable(failed),'需要处理'):''}${U.panel(workTable(jobs.slice(0,5),'AIJob'),'最近任务',`<a href="#/jobs">全部任务 ${icon('arrow-right')}</a>`)}${U.panel(workTable(services.slice(0,5),'AIService'),'在线服务',`<a href="#/services">全部服务 ${icon('arrow-right')}</a>`)}`;
   }
   const numericReady = asset => asset && asset.source==='numeric-example' && asset.status==='ready';
   const assetStatus = asset => numericReady(asset)?'可运行':({registered:'仅登记',trained:'已登记训练产物',published:'已发布',released:'已发布',failed:'失败'}[asset.status]||'仅登记');
   function assetTable() {
     const models = route.section==='models';
     if (!items.length) return empty(models?'暂无模型资产':'暂无数据集',button('register',models?'登记已有模型':'登记已有数据集','plus'));
-    return `<div class="table-wrap"><table><thead><tr><th>名称</th><th>${models?'版本 / 状态':'格式 / 状态'}</th><th>来源</th><th>操作</th></tr></thead><tbody>${items.map((a,i)=>`<tr><td><strong>${E(a.displayName||a.name)}</strong> ${sample(a)}<div class="subtle">${E(a.namespace)}</div></td><td>${E(models ? a.version||'未提供' : a.format||'未提供')}<div class="subtle">${assetStatus(a)}${models&&a.evaluationStatus?' · '+E({passed:'评测通过',failed:'评测未通过',pending:'待评测'}[a.evaluationStatus]||'暂无评测结果'):''}</div></td><td>${a.source==='numeric-example'?'轻量数值预测示例':a.jobName?`<a href="${detailHash('AIJob',a.namespace,a.jobName)}">${E(a.jobName)}</a>`:E(a.source||'手动登记')}</td><td><div class="actions">${numericReady(a)?button('asset-numeric-job','运行预测任务','play')+(models?button('asset-numeric-service','部署预测服务','rocket'):''):a.source==='numeric-example'?'':button('asset-train','用于训练','play')+button('asset-eval','评测','flask-conical')+(models?button('asset-deploy','部署','rocket'):'')}${iconButton('asset-detail','查看资产详情','info')}</div><span hidden data-index="${i}"></span></td></tr>`).join('')}</tbody></table></div>`;
+    const p=U.paginate(items,listPage,listSize), offset=(p.page-1)*p.size;listPage=p.page;
+    const links=a=>U.rowLinks(numericReady(a)?[{action:'asset-numeric-job',label:'运行预测任务'},models&&{action:'asset-numeric-service',label:'部署预测服务'},{action:'asset-detail',label:'详情',aria:'查看资产详情'}]:a.source==='numeric-example'?[{action:'asset-detail',label:'详情',aria:'查看资产详情'}]:[{action:'asset-train',label:'用于训练'},{action:'asset-eval',label:'评测'},models&&{action:'asset-deploy',label:'部署'},{action:'asset-detail',label:'详情',aria:'查看资产详情'}],3);
+    return `<div class="table-wrap"><table><thead><tr><th>名称</th><th>${models?'版本 / 状态':'格式 / 状态'}</th><th>来源</th><th class="col-actions">操作</th></tr></thead><tbody>${p.rows.map((a,j)=>{const i=offset+j;return `<tr><td><strong>${E(a.displayName||a.name)}</strong> ${sample(a)}<div class="subtle">${E(a.namespace)}</div></td><td>${E(models ? a.version||'未提供' : a.format||'未提供')}<div class="subtle">${assetStatus(a)}${models&&a.evaluationStatus?' · '+E({passed:'评测通过',failed:'评测未通过',pending:'待评测'}[a.evaluationStatus]||'暂无评测结果'):''}</div></td><td>${a.source==='numeric-example'?'轻量数值预测示例':a.jobName?`<a href="${detailHash('AIJob',a.namespace,a.jobName)}">${E(a.jobName)}</a>`:E(a.source||'手动登记')}</td><td class="col-actions">${links(a)}<span hidden data-index="${i}"></span></td></tr>`;}).join('')}</tbody></table></div>${U.pager(p)}`;
   }
   async function uploadRequest(path, init) {
     if(demo)throw new Error('演示环境不支持真实数据集上传，也不会保存文件。');
@@ -87,11 +106,11 @@
   }
   function uploadedTable() {
     if(!uploadedAssets.length)return empty('暂无本地上传数据集');
-    return `<div class="table-wrap"><table><thead><tr><th>名称 / 版本</th><th>数据量</th><th>存储 / 状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${uploadedAssets.map((a,i)=>`<tr><td><strong>${E(a.name)}</strong><div class="subtle" title="${E(a.version)}">${E((a.version||'').slice(0,12))}</div></td><td>${E(a.rows ?? '未提供')} 行<div class="subtle">${E(uploadSize(a.bytes))} · ${E(a.format||'jsonl')}</div></td><td>本地持久化<div class="subtle">${a.status==='validated'?'校验通过':E(a.status||'未提供')} · 集群运行未就绪</div></td><td>${E(time(a.createdAt))}</td><td>${iconButton('upload-preview','查看数据预览','eye')}<span hidden data-upload-index="${i}"></span></td></tr>`).join('')}</tbody></table></div>`;
+    return `<div class="table-wrap"><table><thead><tr><th>名称 / 版本</th><th>数据量</th><th>存储 / 状态</th><th>创建时间</th><th class="col-actions">操作</th></tr></thead><tbody>${uploadedAssets.map((a,i)=>`<tr><td><strong>${E(a.name)}</strong><div class="subtle" title="${E(a.version)}">${E((a.version||'').slice(0,12))}</div></td><td>${E(a.rows ?? '未提供')} 行<div class="subtle">${E(uploadSize(a.bytes))} · ${E(a.format||'jsonl')}</div></td><td>本地持久化<div class="subtle">${a.status==='validated'?'校验通过':E(a.status||'未提供')} · 集群运行未就绪</div></td><td>${E(time(a.createdAt))}</td><td class="col-actions">${U.rowLinks([{action:'upload-preview',label:'预览',aria:'查看数据预览'}])}<span hidden data-upload-index="${i}"></span></td></tr>`).join('')}</tbody></table></div>`;
   }
   function renderUploads() {
     const section=document.getElementById('uploaded-datasets');if(!section)return;
-    section.innerHTML='<div class="section-head"><h2>本地上传数据集</h2>'+iconButton('refresh-uploads','刷新上传数据集','refresh-cw')+'</div>'+(demo?'<div class="notice">演示环境不支持真实上传，不会保存文件。</div>':(uploadError?notice(uploadError,'refresh-uploads'):'')+(uploadLoading?'<div class="loading" role="status">正在读取上传数据集…</div>':uploadedTable()));icons();
+    section.innerHTML='<div class="console-panel-head"><h2>本地上传数据集</h2><div class="actions">'+iconButton('refresh-uploads','刷新上传数据集','refresh-cw')+'</div></div>'+(demo?'<div class="notice">演示环境不支持真实上传，不会保存文件。</div>':(uploadError?notice(uploadError,'refresh-uploads'):'')+(uploadLoading?'<div class="loading" role="status">正在读取上传数据集…</div>':uploadedTable()));icons();
   }
   async function loadUploads() {
     const v=routeVersion, seq=++uploadListVersion;uploadError='';uploadLoading=true;renderUploads();
@@ -141,16 +160,18 @@
   function renderCollection() {
     const collection=document.getElementById('collection');
     if(collection&&['jobs','services'].includes(route.section)){
-      collection.innerHTML=workTable(filtered(items),route.section==='jobs'?'AIJob':'AIService');
+      collection.innerHTML=workTable(filtered(items),route.section==='jobs'?'AIJob':'AIService',true);
       document.getElementById('page-error').innerHTML='';icons();return;
     }
     if(route.section==='datasets'){
-      page.innerHTML=heading(titles.datasets,button('upload-dataset','上传数据集','upload',true)+button('numeric-initialize','使用示例数据','flask-conical')+button('register','登记已有数据集','plus'))+'<section id="uploaded-datasets"></section><section id="registered-datasets"><div class="section-head"><h2>数据集资产</h2></div><div id="page-error"></div><div id="collection"></div></section>';
+      page.innerHTML=guide('datasets')+'<section id="uploaded-datasets" class="console-panel"></section><section id="registered-datasets" class="console-panel"><div class="toolbar"><h2>数据集资产</h2><div class="toolbar-end">'+button('numeric-initialize','使用示例数据','flask-conical')+button('register','登记已有数据集','plus')+button('upload-dataset','上传数据集','upload',true)+'</div></div><div id="page-error"></div><div id="collection"></div></section>';
       document.getElementById('collection').innerHTML=assetTable();renderUploads();icons();return;
     }
-    const actions=route.section==='overview'?button('new-job','创建任务','plus',true)+button('new-service','部署服务','rocket') : route.section==='jobs'?button('new-job','创建任务','plus',true) : route.section==='services'?button('new-service','部署服务','plus',true):button('numeric-initialize','使用示例模型','flask-conical',true)+button('register','登记已有模型','plus');
-    page.innerHTML=heading(titles[route.section],actions)+'<div id="page-error"></div>'+(route.section==='overview'?`<div class="section-head"><span class="subtle">${updated?'更新于 '+E(updated):''}</span>${iconButton('refresh','刷新工作台','refresh-cw')}</div>`: ['jobs','services'].includes(route.section)?filters():'')+'<section id="collection"></section>';
-    document.getElementById('collection').innerHTML=route.section==='overview'?overview():['models','datasets'].includes(route.section)?assetTable():workTable(filtered(items),route.section==='jobs'?'AIJob':'AIService');
+    const section=route.section;
+    if(section==='overview')page.innerHTML=guide('overview')+`<div class="toolbar overview-bar"><span class="subtle">${updated?'更新于 '+E(updated):''}</span><div class="toolbar-end">${iconButton('refresh','刷新工作台','refresh-cw')}${button('new-service','部署服务','rocket')}${button('new-job','创建任务','plus',true)}</div></div><div id="page-error"></div><section id="collection"></section>`;
+    else if(section==='models')page.innerHTML=guide('models')+`<section class="console-panel"><div class="toolbar"><h2>模型资产</h2><div class="toolbar-end">${button('register','登记已有模型','plus')}${button('numeric-initialize','使用示例模型','flask-conical',true)}</div></div><div id="page-error"></div><div id="collection"></div></section>`;
+    else page.innerHTML=guide(section)+`<section class="console-panel">${filters()}<div id="page-error"></div><section id="collection"></section></section>`;
+    document.getElementById('collection').innerHTML=section==='overview'?overview():section==='models'?assetTable():workTable(filtered(items),section==='jobs'?'AIJob':'AIService',true);
     icons();
   }
   async function refresh(initial=false) {
@@ -203,8 +224,10 @@
   }
   function renderDetail() {
     const job=route.section==='jobs';
-    const actions=button(job?'rerun':'restart',job?'重新运行':'重启服务',job?'rotate-ccw':'rotate-cw')+iconButton('delete','删除'+(job?'任务':'服务'),'trash-2');
-    page.innerHTML=`<a class="back-link" href="${returningList[route.section]}">${icon('arrow-left')} 返回${titles[route.section]}</a>`+heading(route.name,actions)+`<div class="actions detail-status">${badge(detail,job?'AIJob':'AIService')}${sample(detail)}<span class="subtle">${E(route.namespace)}</span>${iconButton('refresh','刷新详情','refresh-cw')}</div><div id="page-error"></div><div class="tabs" role="tablist" aria-label="详情标签">${[['overview','概览'],['logs','日志'],['result',job?'结果与产物':'服务访问'],['config','配置']].map(([v,l])=>`<button type="button" role="tab" aria-selected="${route.tab===v}" data-tab="${v}">${l}</button>`).join('')}</div><section class="detail-body" id="detail-content"></section>`;
+    const actions=iconButton('refresh','刷新详情','refresh-cw')+`<button type="button" class="button danger" data-action="delete" aria-label="删除${job?'任务':'服务'}">${icon('trash-2')}删除</button>`+button(job?'rerun':'restart',job?'重新运行':'重启服务',job?'rotate-ccw':'rotate-cw',true);
+    const back=returningList[route.section];
+    // The detail card: where it is, what it is and its state, its key facts, and its tabs.
+    page.innerHTML=`<div class="detail-card">${U.crumbs([[identity.tenant,'#/overview'],[titles[route.section],back],[route.name]])}<div class="detail-head"><div class="detail-title"><a class="back-link" href="${back}" aria-label="返回${titles[route.section]}">${icon('arrow-left')}</a><h1>${E(route.name)}</h1>${badge(detail,job?'AIJob':'AIService')}${sample(detail)}</div><div class="actions">${actions}</div></div>${definition([['命名空间',route.namespace],['底层类型',job?'AIJob':'AIService'],['创建时间',time(detail.createdAt)],['所属租户',identity.tenant]])}<div class="tabs" role="tablist" aria-label="详情标签">${[['overview','概览'],['logs','日志'],['result',job?'结果与产物':'服务访问'],['config','配置']].map(([v,l])=>`<button type="button" role="tab" aria-selected="${route.tab===v}" data-tab="${v}">${l}</button>`).join('')}</div></div><div id="page-error"></div><section class="detail-body" id="detail-content"></section>`;
     const body=document.getElementById('detail-content');
     if(route.tab==='overview')body.innerHTML=detailOverview();
     if(route.tab==='config')body.innerHTML='<div class="section-head"><h2>已观测配置</h2></div>'+json({aiMetadata:detail.aiMetadata,components:detail.components});
@@ -334,7 +357,7 @@
       if(!confirm('离开将放弃未提交的配置，是否继续？')){history.replaceState(null,'',lastHash);return;}
       dirty=false;draft=null;
     }
-    routeVersion++;clearTimeout(timer);failures=0;route=S.route(hash);lastHash=hash;items=[];detail=null;result=null;updated='';
+    routeVersion++;clearTimeout(timer);failures=0;route=S.route(hash);lastHash=hash;items=[];detail=null;result=null;updated='';listPage=1;presetChoice='';
     uploadedAssets=[];uploadError='';uploadLoading=false;uploadListVersion++;
     if(modal.open&&!modalBusy)modal.close();
     document.body.classList.remove('nav-open');document.getElementById('nav-toggle').setAttribute('aria-expanded','false');
@@ -344,22 +367,36 @@
     if(!route.detail&&!route.create&&['jobs','services'].includes(route.section))returningList[route.section]=hash;
     if(route.create){if(!draft)draft=ConsoleCreate.defaults(route.section==='jobs'?'AIJob':'AIService',identity.namespace,identity.tenant);step=0;draftError='';submitMessage='';uncertain=false;renderCreate();loadAssetOptions();}
     else refresh(true);
+    U.announce(route.create?(route.section==='jobs'?'创建任务':'部署服务'):route.detail?route.name:titles[route.section]);
     page.focus({preventScroll:true});
   }
   window.addEventListener('hashchange',loadRoute);
+  U.onNavigate(window,hash=>navigate(hash));
   window.addEventListener('beforeunload',event=>{if(dirty||submitting){event.preventDefault();event.returnValue='';}});
   document.addEventListener('visibilitychange',()=>{if(document.hidden)clearTimeout(timer);else request(apiRoot+'/session').then(s=>{if(s.namespace!==identity.namespace || s.username!==identity.username)expired();else if(!route.create)refresh();}).catch(err=>{if(err.status===401)expired();else toast('暂时无法检查连接，当前输入已保留。');});});
   document.getElementById('nav-toggle').onclick=()=>{document.body.classList.toggle('nav-open');document.getElementById('nav-toggle').setAttribute('aria-expanded',String(document.body.classList.contains('nav-open')));};
   document.getElementById('environment').textContent=demo?'演示环境':'集群模式';
   document.getElementById('environment').classList.add(demo?'warn':'neutral');
-  document.getElementById('logout-form').addEventListener('submit',event=>{if(dirty&&!confirm('退出将放弃未提交的配置，是否继续？')){event.preventDefault();return;}dirty=false;draft=null;clearTimeout(timer);if(demo)event.target.action='/logout?demo=local';});
+  document.getElementById('logout-form').addEventListener('submit',event=>{if(dirty&&!confirm('退出将放弃未提交的配置，是否继续？')){event.preventDefault();return;}dirty=false;draft=null;clearTimeout(timer);if(demo)event.target.action=base+'/logout?demo=local';});
 
   // Creation drafts never provide the scope used by lists or selected objects.
-  function field(name,label,type='text',options) {
+  function field(name,label,type='text',options,help='') {
     const value=draft[name] == null ? '' : draft[name];
     const control=options?`<select id="draft-${name}" data-field="${name}">${options.map(([v,l])=>`<option value="${E(v)}"${String(value)===String(v)?' selected':''}>${E(l)}</option>`).join('')}</select>`:type==='textarea'?`<textarea id="draft-${name}" data-field="${name}" rows="5">${E(value)}</textarea>`:`<input id="draft-${name}" data-field="${name}" type="${type}" value="${E(value)}"${type==='number'?' min="0" step="any"':''}>`;
-    return `<label class="field${type==='textarea'?' wide':''}" for="draft-${name}">${E(label)}${control}</label>`;
+    return `<label class="field${type==='textarea'?' wide':''}" for="draft-${name}"><span class="field-label">${E(label)}${help?U.tip(help):''}</span>${control}</label>`;
   }
+  // choice picks one of a few values as joined buttons, as a select would.
+  function choice(name,label,options,help='') {
+    const value=String(draft[name]);
+    return `<div class="field"><span class="field-label">${E(label)}${help?U.tip(help):''}</span><div class="segmented" role="radiogroup" id="draft-${name}" aria-label="${E(label)}">${options.map(([v,l])=>`<button type="button" role="radio" data-action="pick" data-field="${name}" data-value="${E(v)}" aria-checked="${value===String(v)}">${E(l)}</button>`).join('')}</div></div>`;
+  }
+  // cards picks one of a few values by what each does, the chosen card ticked.
+  function cards(attrs,options,chosen) {
+    return `<div class="option-cards" role="radiogroup" ${attrs}>${options.map(([v,title,text])=>`<button type="button" role="radio" class="option-card" data-value="${E(v)}" aria-checked="${chosen===v}"><strong>${E(title)}</strong><span>${E(text)}</span></button>`).join('')}</div>`;
+  }
+  const purposeHelp={training:'在数据集上训练或微调模型',evaluation:'按阈值评测模型表现',batch:'运行一次性的批处理容器','offline-inference':'对数据集批量推理',service:'把模型部署为在线推理服务',agent:'部署智能体服务'};
+  // preset is which resource preset the draft's figures match.
+  const preset=()=>presetChoice||(draft.cpu==='1'&&draft.memory==='1Gi'&&String(draft.gpu)==='0'?'cpu':draft.cpu==='8'&&draft.memory==='32Gi'&&String(draft.gpu)==='1'?'gpu':'custom');
   function chosenOptions(list,fieldName,labelKey) {
     const values=list.map(a=>[a[fieldName],(a.displayName||a.name)+(a.version?' · '+a.version:'')]);
     if(draft[fieldName]&&!values.some(([v])=>v===draft[fieldName]))values.unshift([draft[fieldName],'当前引用（未在资产列表中确认）']);
@@ -368,22 +405,23 @@
   function createInputs() {
     const job=draft.kind==='AIJob';
     const needsModel=job?draft.purpose!=='batch':draft.purpose==='service';
-    return `<div class="form-grid">${field('name',job?'任务名称':'服务名称')}${field('example','运行方式','text',draft.purpose==='agent'||draft.purpose==='batch'||draft.purpose==='offline-inference'?[['false','自定义容器']]:[['true','示例运行时'],['false','自定义容器']])}</div>${draft.example?'<div class="notice">示例运行时用于验证纳管流程，不执行真实训练、评测或模型推理。</div>':''}${assetLoading?'<div class="loading" role="status">正在读取资产…</div>':''}${assetError?notice(assetError,'reload-assets'):''}<div class="form-grid">${needsModel?field('modelURI',job?'输入模型':'模型版本','text',chosenOptions(modelOptions,'modelURI','模型')):''}${job&&draft.purpose!=='batch'?field('datasetURI','输入数据集','text',chosenOptions(datasetOptions,'datasetURI','数据集')):''}${field('image','容器镜像')}${field('runtime','运行时','text',[['batch','Batch'],['http','HTTP'],['pytorch','PyTorch'],['vllm','vLLM'],['triton','Triton'],['custom','自定义']])}${!draft.example?field('command','启动命令','textarea'):''}${job&&draft.purpose==='training'?field('epochs','Epoch','number')+field('learningRate','学习率'):''}${job&&draft.purpose==='evaluation'?field('threshold','通过阈值（0–1）','number'):''}</div>${needsModel?`<div class="actions">${button('register-create-model','登记已有模型','plus')}${job?button('register-create-dataset','登记已有数据集','plus'):''}</div>`:''}`;
+    return `<div class="form-grid">${field('name',job?'任务名称':'服务名称')}${choice('example','运行方式',draft.purpose==='agent'||draft.purpose==='batch'||draft.purpose==='offline-inference'?[['false','自定义容器']]:[['true','示例运行时'],['false','自定义容器']],'示例运行时只验证纳管流程，自定义容器运行你的镜像与命令')}</div>${draft.example?'<div class="notice">示例运行时用于验证纳管流程，不执行真实训练、评测或模型推理。</div>':''}${assetLoading?'<div class="loading" role="status">正在读取资产…</div>':''}${assetError?notice(assetError,'reload-assets'):''}<div class="form-grid">${needsModel?field('modelURI',job?'输入模型':'模型版本','text',chosenOptions(modelOptions,'modelURI','模型')):''}${job&&draft.purpose!=='batch'?field('datasetURI','输入数据集','text',chosenOptions(datasetOptions,'datasetURI','数据集')):''}${field('image','容器镜像','text',undefined,'例如 python:3.11-slim')}${field('runtime','运行时','text',[['batch','Batch'],['http','HTTP'],['pytorch','PyTorch'],['vllm','vLLM'],['triton','Triton'],['custom','自定义']])}${!draft.example?field('command','启动命令','textarea'):''}${job&&draft.purpose==='training'?field('epochs','Epoch','number')+field('learningRate','学习率'):''}${job&&draft.purpose==='evaluation'?field('threshold','通过阈值（0–1）','number'):''}</div>${needsModel?`<div class="actions">${button('register-create-model','登记已有模型','plus')}${job?button('register-create-dataset','登记已有数据集','plus'):''}</div>`:''}`;
   }
   function renderCreate() {
     const job=draft.kind==='AIJob', steps=['选择用途','运行配置','资源配置','确认提交'];
-    page.innerHTML=heading(job?'创建任务':'部署服务',button('cancel-create','取消'))+`<div class="steps" aria-label="创建步骤">${steps.map((label,i)=>`<button type="button" data-step="${i}" class="${i===step?'active':i<step?'done':''}"${i>step?' disabled':''} aria-current="${i===step?'step':'false'}"><span>${i+1}</span>${label}</button>`).join('')}</div><section class="form-layout"><div class="form-section"><h2>${steps[step]}</h2><div id="draft-errors" role="alert">${draftError?notice(draftError,''):''}</div><div id="create-fields"></div></div></section>`;
+    const title=job?'创建任务':'部署服务';
+    page.innerHTML=`<div class="form-page">${U.crumbs([[titles[route.section],'#/'+route.section],[title]])}<div class="form-page-head"><button type="button" class="back-link icon-button" data-action="cancel-create" aria-label="返回${titles[route.section]}">${icon('arrow-left')}</button><h1>${title}</h1></div><div class="form-page-body"><div class="steps" aria-label="创建步骤">${steps.map((label,i)=>`<button type="button" data-step="${i}" class="${i===step?'active':i<step?'done':''}"${i>step?' disabled':''} aria-current="${i===step?'step':'false'}"><span>${i<step?'✓':i+1}</span>${label}</button>`).join('')}</div><section class="form-layout"><div class="form-section"><h2>${steps[step]}</h2><div id="draft-errors" role="alert">${draftError?notice(draftError,''):''}</div><div id="create-fields"></div></div></section></div></div>`;
     let html='';
-    if(step===0)html=`<div class="form-grid">${field('purpose','任务用途','text',(job?['training','evaluation','batch','offline-inference']:['service','agent']).map(v=>[v,purposes[v]]))}</div>${definition([['底层类型',draft.kind],['所属租户',identity.tenant],['命名空间',identity.namespace]])}`;
+    if(step===0)html=`<div class="field"><span class="field-label">任务用途</span>${cards('id="draft-purpose" aria-label="任务用途" data-pick="purpose"',(job?['training','evaluation','batch','offline-inference']:['service','agent']).map(v=>[v,purposes[v],purposeHelp[v]]),draft.purpose)}</div><div class="form-section"><h2>工作空间</h2>${definition([['底层类型',draft.kind],['所属租户',identity.tenant],['命名空间',identity.namespace]])}</div>`;
     if(step===1)html=createInputs();
-    if(step===2)html=`<div class="form-grid"><label class="field">资源规格<select id="resource-preset"><option value="custom">自定义</option><option value="cpu">CPU · 1 核 / 1 GiB</option><option value="gpu">GPU · 8 核 / 32 GiB / 1 卡</option></select></label>${field('cpu','CPU 核数')}${field('memory','内存')}${field('gpu','GPU 数量','number')}${job?'':field('replicas','副本数','number')+field('port','容器端口','number')}${field('priority','调度优先级','text',[['normal','普通'],['high','高'],['urgent','紧急']])}${field('nodeType','节点类型','text',[['cpu','CPU 节点'],['gpu','GPU 节点'],['any','不限']])}${field('strategy','调度策略','text',[['performance','性能优先'],['cost','成本优先'],['fast-start','快速启动']])}</div><div class="notice">配额由管理员管理；当前页面不提供剩余额度预估。调度策略是否生效取决于集群配置。</div>`;
+    if(step===2)html=`<div class="field"><span class="field-label">资源规格</span>${cards('id="resource-preset" aria-label="资源规格" data-pick="preset"',[['cpu','CPU 规格','1 核 / 1 GiB'],['gpu','GPU 规格','8 核 / 32 GiB / 1 卡'],['custom','自定义','按需填写 CPU、内存与 GPU']],preset())}</div><div class="form-section"><h2>资源申请</h2><div class="form-grid">${field('cpu','CPU 核数','text',undefined,'例如 1、0.5 或 500m')}${field('memory','内存','text',undefined,'例如 512Mi 或 1Gi')}${field('gpu','GPU 数量','number',undefined,'非负整数，0 表示不申请 GPU')}${job?'':field('replicas','副本数','number')+field('port','容器端口','number')}</div></div><div class="form-section"><h2>调度</h2><div class="form-grid">${field('priority','调度优先级','text',[['normal','普通'],['high','高'],['urgent','紧急']])}${field('nodeType','节点类型','text',[['cpu','CPU 节点'],['gpu','GPU 节点'],['any','不限']])}${field('strategy','调度策略','text',[['performance','性能优先'],['cost','成本优先'],['fast-start','快速启动']],'是否生效取决于集群配置')}</div></div><div class="notice">配额由管理员管理；当前页面不提供剩余额度预估。调度策略是否生效取决于集群配置。</div>`;
     if(step===3) {
       let config='';try{config=ConsoleCreate.generate(draft);}catch(err){draftError=err.message;}
-      html=definition([['名称',draft.name],['用途',purposes[draft.purpose]],['命名空间',identity.namespace],['运行镜像',draft.image],['资源申请',`${draft.cpu} CPU / ${draft.memory} / ${draft.gpu} GPU`],['运行方式',draft.example?'示例运行时':'自定义容器']])+`${draft.example?'<div class="notice">本次使用示例运行时，结果不代表真实算法运行。</div>':''}<label class="field">执行方式<select id="execution-mode"><option value="dry"${draft.dryRun?' selected':''}>仅校验配置</option><option value="create"${!draft.dryRun?' selected':''}>实际创建${demo?'（演示环境）':''}</option></select></label><details><summary>查看生成配置（只读）</summary><pre class="config-output">${E(config)}</pre></details><div id="submit-result" role="status">${submitMessage?`<div class="notice ${uncertain?'error':'success'}">${E(submitMessage)}</div>`:''}</div>${uncertain?button('check-created','查询创建结果','search'):''}`;
+      html=definition([['名称',draft.name],['用途',purposes[draft.purpose]],['命名空间',identity.namespace],['运行镜像',draft.image],['资源申请',`${draft.cpu} CPU / ${draft.memory} / ${draft.gpu} GPU`],['运行方式',draft.example?'示例运行时':'自定义容器']])+`${draft.example?'<div class="notice">本次使用示例运行时，结果不代表真实算法运行。</div>':''}<div class="field"><span class="field-label">执行方式${U.tip('仅校验配置不会创建任何资源')}</span><div class="segmented" role="radiogroup" id="execution-mode" aria-label="执行方式"><button type="button" role="radio" data-action="execution" data-value="dry" aria-checked="${!!draft.dryRun}">仅校验配置</button><button type="button" role="radio" data-action="execution" data-value="create" aria-checked="${!draft.dryRun}">实际创建${demo?'（演示环境）':''}</button></div></div><details><summary>查看生成配置（只读）</summary><pre class="config-output">${E(config)}</pre></details><div id="submit-result" role="status">${submitMessage?`<div class="notice ${uncertain?'error':'success'}">${E(submitMessage)}</div>`:''}</div>${uncertain?button('check-created','查询创建结果','search'):''}`;
     }
     document.getElementById('create-fields').innerHTML=html;
-    page.insertAdjacentHTML('beforeend',`<div class="wizard-footer"><span class="subtle">${step+1} / 4</span><div class="actions">${step>0?button('previous','上一步','arrow-left'):''}${button(step===3?'submit':'next',step===3?(submitting?'提交中…':draft.dryRun?'校验配置':job?'创建任务':'部署服务'):'下一步',step===3?'check':'arrow-right',true)}</div></div>`);
-    if(submitting || uncertain)page.querySelectorAll('[data-field],#execution-mode,[data-action="submit"],[data-action="previous"],[data-step]').forEach(el=>el.disabled=true);
+    page.insertAdjacentHTML('beforeend',`<div class="wizard-footer"><span class="subtle">第 ${step+1} / 4 步</span><div class="actions">${button('cancel-create','取消')}${step>0?button('previous','上一步','arrow-left'):''}${button(step===3?'submit':'next',step===3?(submitting?'提交中…':draft.dryRun?'校验配置':job?'创建任务':'部署服务'):'下一步',step===3?'check':'arrow-right',true)}</div></div>`);
+    if(submitting || uncertain)page.querySelectorAll('[data-field],[data-pick] button,#execution-mode button,[data-action="submit"],[data-action="previous"],[data-step]').forEach(el=>el.disabled=true);
     icons();
   }
   async function loadAssetOptions() {
@@ -431,6 +469,15 @@
       else draftError=errorText(err);
     }finally{submitting=false;if(v===routeVersion&&draft)renderCreate();}
   }
+  // setDraft changes one draft field as its control would, and says whether
+  // the form must be drawn again for the fields that depend on it.
+  function setDraft(key,value) {
+    draft[key]=key==='example'?value==='true':value;dirty=true;
+    if(key==='purpose'&&['agent','batch','offline-inference'].includes(draft.purpose)) {draft.example=false;draft.command='';}
+    if(key==='example'&&draft.example){draft.runtime=draft.kind==='AIJob'?'batch':'http';draft.image=draft.kind==='AIJob'?'busybox:1.36':'python:3.11-slim';draft.command='';}
+    if(key==='modelURI'){const m=modelOptions.find(m=>m.modelURI===value);if(m){draft.modelName=m.name;draft.modelVersion=m.version||'v1';}}
+    return ['purpose','example'].includes(key);
+  }
   async function checkCreated() {
     const v=routeVersion;
     try {
@@ -452,8 +499,18 @@
     const tab=event.target.closest('[data-tab]');
     if(tab){navigate(detailHash(route.section==='jobs'?'AIJob':'AIService',route.namespace,route.name)+'?tab='+tab.dataset.tab);return;}
     const stepButton=event.target.closest('[data-step]');if(stepButton&&!stepButton.disabled){step=Number(stepButton.dataset.step);draftError='';renderCreate();return;}
+    const pageButton=event.target.closest('[data-page]');if(pageButton&&!pageButton.disabled){listPage=Number(pageButton.dataset.page);renderCollection();return;}
+    const card=event.target.closest('[data-pick] [data-value]');
+    if(card&&!card.disabled&&draft){
+      const kind=card.closest('[data-pick]').dataset.pick;
+      if(kind==='preset'){presetChoice=card.dataset.value==='custom'?'custom':'';if(card.dataset.value==='cpu')Object.assign(draft,{cpu:'1',memory:'1Gi',gpu:'0',nodeType:'cpu'});if(card.dataset.value==='gpu')Object.assign(draft,{cpu:'8',memory:'32Gi',gpu:'1',nodeType:'gpu'});dirty=true;}
+      else setDraft(kind,card.dataset.value);
+      renderCreate();return;
+    }
     const el=event.target.closest('[data-action]');if(!el || el.disabled)return;
     const action=el.dataset.action;
+    if(action==='pick'&&draft){setDraft(el.dataset.field,el.dataset.value);renderCreate();return;}
+    if(action==='execution'&&draft){draft.dryRun=el.dataset.value==='dry';dirty=true;submitMessage='';renderCreate();return;}
     if(action==='close-modal'){if(uploadController)uploadController.abort();else if(!modalBusy)modal.close();return;}
     if(action==='upload-dataset'){uploadDataset();return;}
     if(action==='refresh-uploads'){loadUploads();return;}
@@ -486,19 +543,12 @@
   });
   document.addEventListener('input',event=>{
     const key=event.target.dataset.field;
-    if(key&&draft){draft[key]=key==='example'?event.target.value==='true':event.target.value;dirty=true;}
+    if(key&&draft){draft[key]=key==='example'?event.target.value==='true':event.target.value;dirty=true;if(['cpu','memory','gpu'].includes(key))presetChoice='';}
   });
   document.addEventListener('change',event=>{
     const el=event.target,key=el.dataset.field;
-    if(key&&draft) {
-      draft[key]=key==='example'?el.value==='true':el.value;dirty=true;
-      if(key==='purpose'&&['agent','batch','offline-inference'].includes(draft.purpose)) {draft.example=false;draft.command='';}
-      if(key==='example'&&draft.example){draft.runtime=draft.kind==='AIJob'?'batch':'http';draft.image=draft.kind==='AIJob'?'busybox:1.36':'python:3.11-slim';draft.command='';}
-      if(key==='modelURI'){const m=modelOptions.find(m=>m.modelURI===el.value);if(m){draft.modelName=m.name;draft.modelVersion=m.version||'v1';}}
-      if(['purpose','example'].includes(key))renderCreate();
-    }
-    if(el.id==='resource-preset') {if(el.value==='cpu')Object.assign(draft,{cpu:'1',memory:'1Gi',gpu:'0',nodeType:'cpu'});if(el.value==='gpu')Object.assign(draft,{cpu:'8',memory:'32Gi',gpu:'1',nodeType:'gpu'});dirty=true;renderCreate();}
-    if(el.id==='execution-mode'){draft.dryRun=el.value==='dry';dirty=true;submitMessage='';renderCreate();}
+    if(key&&draft&&setDraft(key,el.value))renderCreate();
+    if(el.matches('[data-page-size]')){listSize=Number(el.value)||10;listPage=1;renderCollection();}
     if(['search','status-filter','purpose-filter'].includes(el.id)) {
       const params=new URLSearchParams();const q=document.getElementById('search')?.value,s=document.getElementById('status-filter')?.value,p=document.getElementById('purpose-filter')?.value;
       if(q)params.set('q',q);if(s)params.set('status',s);if(p)params.set('purpose',p);navigate('#/'+route.section+(params.size?'?'+params:''));

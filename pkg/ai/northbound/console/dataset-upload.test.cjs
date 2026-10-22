@@ -16,6 +16,7 @@ function app(demo = false, respond = async () => ({items: []})) {
     URLSearchParams, FormData: class extends FormData {constructor(input) {super();if(input)for(const [k,v] of input)this.set(k,v);}}, Blob, AbortController, setTimeout: () => 0, clearTimeout,
   });
   const source = fs.readFileSync(__dirname + '/app.js', 'utf8');
+  vm.runInContext(fs.readFileSync(__dirname + '/ui.js', 'utf8'), context);
   vm.runInContext(source.replace('  loadRoute();icons();', '  globalThis.uploadTest = {uploadBody, uploadRequest, uploadedTable, refresh, loadUploads, showModal, expired, uploadDataset, previewUpload, state: () => ({modalBusy,uploadController}), setAssets: value => {uploadedAssets=value;}};'), context);
   return {api: context.uploadTest, calls, getNode};
 }

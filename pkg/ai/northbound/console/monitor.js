@@ -2,7 +2,9 @@
   "use strict";
   const S = ConsoleState,
     M = MonitorState,
+    U = ConsoleUI,
     E = S.escape;
+  const base = U.basePath(document.body.dataset.basePath);
   const page = document.getElementById("page"),
     modal = document.getElementById("modal");
   const username = document.body.dataset.accountUsername;
@@ -15,6 +17,14 @@
     tenants: "租户资源",
     audits: "操作审计",
     applications: "资源详情",
+  };
+  // What each list is for, under its title.
+  const descriptions = {
+    overview: "跨租户观测任务与服务的运行状态，优先处理异常与待核查项。",
+    jobs: "全部租户的训练、评测与批处理任务，按命名空间、租户和状态筛选。",
+    services: "全部租户的在线服务与智能体服务，核查就绪副本与访问。",
+    tenants: "按租户汇总任务与服务的资源请求声明，并对照命名空间配额。",
+    audits: "通过控制台提交的生命周期操作及其结果。",
   };
   const actionLabels = {
     rerun: "重新运行",
@@ -34,14 +44,21 @@
     quotaError = "",
     loading = false,
     quotaLoading = false,
-    updated = "";
+    updated = "",
+    listPage = 1,
+    listSize = 10;
   let logPods = [],
     modalTarget = null,
     modalBusy = false,
     auxBusy = false;
   const actionStates = new Map();
   const logSelections = new Map();
-  const client = MonitorAPI.create({ username, demo, onUnauthorized: expired });
+  const client = MonitorAPI.create({
+    username,
+    demo,
+    basePath: base,
+    onUnauthorized: expired,
+  });
   const request = (path, init) => client.request(path, init);
   const pathFor = (ns, name) =>
     `${root}/applications/${encodeURIComponent(ns)}/${encodeURIComponent(name)}`;
@@ -68,7 +85,7 @@
     return `<span class="badge ${s.tone}">${E(s.label)}</span>`;
   };
   const sample = (i) =>
-    demo || S.example(i) ? '<span class="badge warn">示例</span>' : "";
+    demo || S.example(i) ? '<span class="tag warn">示例</span>' : "";
   const errorText = (e) =>
     e.status === 403
       ? "当前账号无权访问此资源。"
@@ -81,12 +98,23 @@
     `<div class="notice error" role="alert"><span>${E(text)}</span>${retry ? button(retry, "重试", "refresh-cw") : ""}</div>`;
   const definition = (entries) =>
     `<dl class="detail-meta">${entries.map(([k, v]) => `<div><dt>${E(k)}</dt><dd>${E(v ?? "未提供")}</dd></div>`).join("")}</dl>`;
-  const heading = (title, actions = "") =>
-    `<div class="page-heading"><div><div class="eyebrow">智算纳管 / 监控台</div><h1>${E(title)}</h1></div><div class="actions">${actions}</div></div>`;
+  const heading = (title, actions = "", description = "") =>
+    `<div class="page-heading"><div><div class="eyebrow">智算纳管 / 监控台</div><h1>${E(title)}</h1>${description ? `<p class="subtle">${E(description)}</p>` : ""}</div><div class="actions">${actions}</div></div>`;
+  // A last header of 操作 marks the operations column, kept at the right edge.
   const table = (headers, rows) =>
     rows.length
-      ? `<div class="table-wrap"><table class="monitor-table"><thead><tr>${headers.map((h) => `<th scope="col">${E(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`
+      ? `<div class="table-wrap"><table class="monitor-table"><thead><tr>${headers.map((h) => `<th scope="col"${h === "操作" ? ' class="col-actions"' : ""}>${E(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`
       : empty("没有符合筛选条件的记录");
+  const actionsCell = (links) =>
+    `<td class="col-actions">${U.rowLinks(links)}</td>`;
+  const auditLink = (i) =>
+    M.hash({ section: "audits", ns: i.namespace, objectName: i.name });
+  // paged is the page of rows a list shows, with its pager beneath.
+  function paged(rows, render) {
+    const p = U.paginate(rows, listPage, listSize);
+    listPage = p.page;
+    return p.total ? render(p.rows) + U.pager(p) : render(p.rows);
+  }
   const cell = (v) => `<td>${v}</td>`;
   const targetKey = (ns, name) => JSON.stringify([ns, name]);
   const detailLink = (i) => E(M.detailHash(i, route));
@@ -126,7 +154,9 @@
     modal.innerHTML = "";
     document.getElementById("toast").hidden = true;
     page.innerHTML =
-      '<div class="empty-state"><h1>会话已失效或账号已切换</h1><a class="button" href="/login' +
+      '<div class="empty-state"><h1>会话已失效或账号已切换</h1><a class="button" href="' +
+      base +
+      "/login" +
       (demo ? "?demo=local" : "") +
       '">重新登录</a></div>';
   }
@@ -173,7 +203,7 @@
           ],
           route.status,
         );
-    return `<div class="filters monitor-filters">${html}<span class="updated" id="updated"></span>${iconButton("refresh", "刷新列表", "refresh-cw")}</div>`;
+    return `<div class="filters monitor-filters">${html}<div class="toolbar-end"><span class="updated" id="updated"></span>${iconButton("refresh", "刷新列表", "refresh-cw")}</div></div>`;
   }
   function workTable(rows, evidence = false) {
     const headers = [
@@ -182,6 +212,7 @@
       "状态",
       evidence ? "诊断线索" : "资源请求声明",
       "创建时间",
+      "操作",
     ];
     return table(
       headers,
@@ -205,6 +236,10 @@
           ]
             .map(cell)
             .join("") +
+          actionsCell([
+            { label: "详情", href: M.detailHash(i, route), aria: "查看 " + i.name },
+            { label: "审计", href: auditLink(i), aria: "查看 " + i.name + " 的审计" },
+          ]) +
           "</tr>"
         );
       }),
@@ -238,12 +273,9 @@
           `<div class="summary-item"><strong>${n}</strong><span>${l}</span></div>`,
       )
       .join("")}</div>
-      <div class="section-head"><h2>异常与待核查</h2></div>
-      ${abnormal.length ? workTable(abnormal, true) : empty("暂无异常证据")}
-      <div class="section-head"><h2>最近任务</h2></div>
-      ${workTable(jobs.slice(0, 5))}
-      <div class="section-head"><h2>在线服务</h2></div>
-      ${workTable(services.slice(0, 5))}`;
+      ${U.panel(abnormal.length ? workTable(abnormal, true) : empty("暂无异常证据"), "异常与待核查")}
+      ${U.panel(workTable(jobs.slice(0, 5)), "最近任务", `<a href="#/jobs">全部任务</a>`)}
+      ${U.panel(workTable(services.slice(0, 5)), "在线服务", `<a href="#/services">全部服务</a>`)}`;
   }
   function tenantTable(rows) {
     const groups = M.groupResources(rows);
@@ -271,7 +303,7 @@
   }
   function auditTable(rows) {
     return table(
-      ["时间 / 操作人", "操作", "对象 / 命名空间", "结果", "消息"],
+      ["时间 / 操作人", "操作类型", "对象 / 命名空间", "结果", "消息", "操作"],
       rows.map(
         (i) =>
           "<tr>" +
@@ -288,6 +320,13 @@
           ]
             .map(cell)
             .join("") +
+          actionsCell([
+            {
+              label: "查看对象",
+              href: i.namespace && i.name ? M.detailHash(i, route) : "",
+              hidden: !(i.namespace && i.name),
+            },
+          ]) +
           "</tr>",
       ),
     );
@@ -312,15 +351,17 @@
           : route.section === "tenants"
             ? tenantTable(rows)
             : route.section === "audits"
-              ? auditTable(
+              ? paged(
                   M.filterAudits(items, { ...route, name: route.objectName }),
+                  auditTable,
                 )
-              : workTable(
+              : paged(
                   rows.filter(
                     (i) =>
                       S.kind(i) ===
                       (route.section === "jobs" ? "AIJob" : "AIService"),
                   ),
+                  (list) => workTable(list),
                 );
     }
     icons();
@@ -523,26 +564,45 @@
   function renderDetail() {
     const kind = S.kind(detail),
       job = kind === "AIJob";
-    const actions = kind
-      ? `<button class="button" data-lifecycle="${job ? "rerun" : "restart"}">${icon("rotate-cw")}${job ? "重新运行" : "重启服务"}</button><button class="icon-button" data-lifecycle="delete" aria-label="删除${job ? "任务" : "服务"}" title="删除${job ? "任务" : "服务"}">${icon("trash-2")}</button>`
-      : "";
+    const actions =
+      iconButton("refresh", "刷新详情", "refresh-cw") +
+      (kind
+        ? `<button class="button danger" data-lifecycle="delete" aria-label="删除${job ? "任务" : "服务"}" title="删除${job ? "任务" : "服务"}">${icon("trash-2")}删除</button><button class="button primary" data-lifecycle="${job ? "rerun" : "restart"}">${icon("rotate-cw")}${job ? "重新运行" : "重启服务"}</button>`
+        : "");
     const tabs = [
       ["overview", "概览"],
       ["logs", "日志"],
       ...(kind ? [["result", job ? "结果与产物" : "服务访问"]] : []),
       ["config", "配置"],
     ];
+    const list =
+      route.from ||
+      (route.section === "applications" ? "audits" : route.section);
+    // The detail card: where it is, what it is and its state, its key facts, and its tabs.
     page.innerHTML = `
-      <a class="back-link" href="${returnLink()}">${icon("arrow-left")}返回列表</a>
-      ${heading(route.name, actions)}
-      <div class="actions detail-status">${badge(detail)}${sample(detail)}
-        <span class="subtle">${E(route.namespace)}</span>${iconButton("refresh", "刷新详情", "refresh-cw")}
+      <div class="detail-card">
+        ${U.crumbs([
+          ["监控台", "#/overview"],
+          [titles[list] || "列表", returnLink()],
+          [route.name],
+        ])}
+        <div class="detail-head">
+          <div class="detail-title"><a class="back-link" href="${returnLink()}" aria-label="返回列表">${icon("arrow-left")}</a>
+            <h1>${E(route.name)}</h1>${badge(detail)}${sample(detail)}</div>
+          <div class="actions">${actions}</div>
+        </div>
+        ${definition([
+          ["命名空间", route.namespace],
+          ["租户", M.tenant(detail) || "未提供"],
+          ["底层类型", kind || "未提供"],
+          ["创建时间", time(detail.createdAt)],
+        ])}
+        <div class="detail-links"><a href="${E(M.hash({ section: "audits", ns: route.namespace, objectName: route.name }))}">${icon("history")} 查看此对象审计</a></div>
+        <div class="tabs" role="tablist" aria-label="详情标签">
+          ${tabs.map(([t, l]) => `<button type="button" role="tab" aria-selected="${route.tab === t}" data-tab="${t}">${l}</button>`).join("")}
+        </div>
       </div>
-      <a class="back-link" href="${E(M.hash({ section: "audits", ns: route.namespace, objectName: route.name }))}">${icon("history")}查看此对象审计</a>
       <div id="page-error"></div><div id="action-status"></div>
-      <div class="tabs" role="tablist" aria-label="详情标签">
-        ${tabs.map(([t, l]) => `<button type="button" role="tab" aria-selected="${route.tab === t}" data-tab="${t}">${l}</button>`).join("")}
-      </div>
       <section class="detail-body" id="detail-content"></section>`;
     const body = document.getElementById("detail-content");
     if (route.tab === "overview") body.innerHTML = evidenceOverview();
@@ -853,6 +913,7 @@
     quotaError = "";
     updated = "";
     logPods = [];
+    listPage = 1;
     if (!modalBusy) {
       modal.close();
       modal.innerHTML = "";
@@ -872,16 +933,23 @@
       icons();
       return;
     }
+    U.announce(route.detail ? route.name : titles[route.section]);
     if (route.detail) {
       loadDetail();
       return;
     }
     page.innerHTML =
-      heading(titles[route.section]) +
-      filters() +
-      '<div id="page-error"></div><section id="collection"></section>' +
+      heading(titles[route.section], "", descriptions[route.section]) +
+      // The overview's cards and panels stand on the page, under the filters.
+      (route.section === "overview"
+        ? '<section class="console-panel">' +
+          filters() +
+          '</section><div id="page-error"></div><section id="collection"></section>'
+        : '<section class="console-panel">' +
+          filters() +
+          '<div id="page-error"></div><section id="collection"></section></section>') +
       (route.section === "tenants"
-        ? '<section id="quota-content"></section>'
+        ? '<section id="quota-content" class="console-panel"></section>'
         : "");
     loadList();
     if (route.section === "tenants") loadQuotas();
@@ -890,6 +958,7 @@
     const key = e.target.dataset.filter;
     if (!key || dead) return;
     route = { ...route, [key === "name" ? "objectName" : key]: e.target.value };
+    listPage = 1;
     history.replaceState(null, "", M.hash(route));
     updateScope();
     if (key === "ns") {
@@ -903,6 +972,11 @@
   });
   page.addEventListener("change", (e) => {
     if (e.target.matches("select[data-filter]")) changeFilter(e);
+    if (e.target.matches("[data-page-size]")) {
+      listSize = Number(e.target.value) || 10;
+      listPage = 1;
+      renderCollection();
+    }
     if (e.target.id === "log-pod") {
       populateLogs(e.target.value, "");
       loadAux("logs");
@@ -913,6 +987,11 @@
     if (dead) return;
     const el = e.target.closest("button");
     if (!el || el.disabled) return;
+    if (el.dataset.page) {
+      listPage = Number(el.dataset.page);
+      renderCollection();
+      return;
+    }
     if (el.dataset.tab) {
       location.hash = M.hash({ ...route, tab: el.dataset.tab });
       return;
@@ -977,6 +1056,9 @@
     ? "本地演示"
     : "集群观测";
   window.addEventListener("hashchange", navigate);
+  U.onNavigate(window, (hash) => {
+    location.hash = hash;
+  });
   navigate();
   icons();
 })();

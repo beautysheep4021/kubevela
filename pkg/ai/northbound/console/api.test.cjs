@@ -364,3 +364,11 @@ test('seed result metrics and registration source references retain tenant isola
   await assert.rejects(client.request(prefix + '/datasets', {method: 'POST', body: '{broken'}), e => e.status === 400);
   assert.equal((await client.request(prefix + '/models')).items.length, 1);
 });
+test('a base path prefixes every request while API paths keep their /api/v1/ai form', async () => {
+  const seen = [];
+  const client = harness(async url => {seen.push(url); return json(url.endsWith('/session') ? {...ownIdentity, role: 'user'} : {items: []});})
+    .create({...ownIdentity, basePath: '/ai-console/'});
+  await client.request(prefix + '/applications?namespace=ai-tenant-a');
+  assert.deepEqual(seen, ['/ai-console' + prefix + '/session', '/ai-console' + prefix + '/applications?namespace=ai-tenant-a']);
+  await assert.rejects(client.request('/ai-console' + prefix + '/applications'), {status: 400});
+});

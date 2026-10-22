@@ -1,104 +1,40 @@
-body[data-role="monitor"] {
-  letter-spacing: 0;
-}
-.monitor-clue {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-}
-.monitor-resources {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 8px;
-}
-.monitor-resources span {
-  white-space: nowrap;
-}
-.monitor-filters {
-  align-items: flex-end;
-}
-.monitor-filters label {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  flex: 1 1 150px;
-  min-width: 0;
-  max-width: 240px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.monitor-filters input,
-.monitor-filters select {
-  width: 100%;
-  min-width: 0;
-}
-.monitor-filters .updated {
-  flex: 1 1 140px;
-  margin: 0;
-}
-.monitor-table {
-  table-layout: fixed;
-  min-width: 660px;
-}
-.monitor-table th,
-.monitor-table td {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  vertical-align: top;
-}
-.monitor-table .name-link {
-  display: inline;
-}
-.monitor-table .badge {
-  white-space: normal;
-}
-.monitor-evidence {
-  max-width: 100%;
-  overflow-wrap: anywhere;
-}
-.monitor-evidence .subtle {
-  white-space: pre-wrap;
-}
-.monitor-pending {
-  border-left-color: #af861f;
-  background: #fffbed;
-}
-.monitor-quota {
-  margin-top: 20px;
-}
-.monitor-quota h3 {
-  margin-bottom: 10px;
-  overflow-wrap: anywhere;
-}
-.monitor-quota table {
-  min-width: 620px;
-}
-.monitor-quota th:first-child {
-  width: 210px;
-}
-#collection,
-#quota-content,
-#detail-content,
-#page-error,
-#action-status {
-  min-width: 0;
-}
-.monitor-log-filters label {
-  max-width: 320px;
-}
-.monitor-log-filters input[type="number"] {
-  max-width: 150px;
-}
+/* The monitor console's own parts; tokens and the rest come from styles.css. */
+body[data-role="monitor"] { letter-spacing: 0; }
+.page-heading .subtle { margin-top: 4px; font-size: 13px; }
+.monitor-clue { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.monitor-resources { display: flex; flex-wrap: wrap; gap: 2px 8px; }
+.monitor-resources span { white-space: nowrap; }
+.monitor-filters { align-items: flex-end; }
+.monitor-filters label { display: flex; flex-direction: column; gap: 4px; flex: 1 1 150px; min-width: 0; max-width: 220px; color: var(--c-text-2); font-size: 12px; }
+.monitor-filters input, .monitor-filters select { width: 100%; min-width: 0; }
+.monitor-filters .toolbar-end { align-self: flex-end; }
+.monitor-table { table-layout: fixed; min-width: 760px; }
+.monitor-table th, .monitor-table td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+.monitor-table th.col-actions, .monitor-table td.col-actions { width: 132px; white-space: nowrap; }
+.monitor-table .name-link { display: inline; }
+.monitor-table .badge { white-space: normal; }
+.monitor-evidence { max-width: 100%; overflow-wrap: anywhere; }
+.monitor-evidence .subtle { white-space: pre-wrap; }
+.monitor-pending { border-color: #ffcf8b; background: #fff7e8; }
+
+/* Sections inside a panel take the panel's head and padding. */
+#collection > .section-head, #quota-content > .section-head { margin: 0; padding: 12px 20px; border-bottom: 1px solid var(--c-divider); }
+#quota-content > p.subtle { margin: 12px 20px 0; }
+#quota-content > .monitor-quota, #quota-content > .empty-state, #quota-content > .notice, #quota-content > .loading { margin: 12px 20px 16px; }
+.monitor-quota { margin-top: 16px; }
+.monitor-quota h3 { margin-bottom: 8px; overflow-wrap: anywhere; }
+.monitor-quota .table-wrap { border: 1px solid var(--c-border); border-radius: var(--radius); }
+.monitor-quota table { min-width: 620px; }
+.monitor-quota th:first-child { width: 210px; }
+.detail-body .table-wrap { border: 1px solid var(--c-border); border-radius: var(--radius); }
+#collection, #quota-content, #detail-content, #page-error, #action-status { min-width: 0; }
+#page-error > .notice, #action-status > .notice { margin: 0 0 12px; }
+.console-panel #page-error > .notice { margin: 0 20px 12px; }
+.monitor-log-filters { padding: 0 0 12px; }
+.monitor-log-filters label { max-width: 320px; }
+.monitor-log-filters input[type="number"] { max-width: 150px; }
 @media (max-width: 600px) {
-  .monitor-filters label {
-    max-width: none;
-  }
-  .monitor-table {
-    min-width: 620px;
-  }
-  .monitor-log-filters input[type="number"] {
-    max-width: none;
-  }
+  .monitor-filters label { max-width: none; }
+  .monitor-table { min-width: 620px; }
+  .monitor-log-filters input[type="number"] { max-width: none; }
 }
