@@ -4,27 +4,47 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 type consoleRole string
 
 const (
-	consoleRoleUser           consoleRole = "user"
-	consoleRoleMonitor        consoleRole = "monitor"
-	sessionCookieName                     = "kubevela_ai_session"
-	sessionTTL                            = 12 * time.Hour
-	defaultRemoteUserHeader               = "X-Remote-User"
-	defaultRemoteGroupsHeader             = "X-Remote-Groups"
+	consoleRoleUser              consoleRole = "user"
+	consoleRoleMonitor           consoleRole = "monitor"
+	sessionCookieName                        = "kubevela_ai_session"
+	sessionTTL                               = 12 * time.Hour
+	defaultRemoteUserHeader                  = "X-Remote-User"
+	defaultRemoteGroupsHeader                = "X-Remote-Groups"
+	defaultRemoteTenantHeader                = "X-Remote-Tenant"
+	defaultRemoteNamespaceHeader             = "X-Remote-Namespace"
+	// forwardedPrefixHeader carries the path a trusted proxy serves the
+	// console under, such as /ai-console.
+	forwardedPrefixHeader = "X-Forwarded-Prefix"
+	// basePathPlaceholder marks every absolute URL in the console and login
+	// pages, replaced with the base path the request is served under.
+	basePathPlaceholder = "__BASE_PATH__"
 )
+
+// basePathPattern is a base path the console may be served under: one or
+// more /segment parts of letters, digits, hyphens and underscores.
+var basePathPattern = regexp.MustCompile(`^(/[A-Za-z0-9_-]+)+$`)
+
+// errNoTenantNamespace is returned for a namespaced request by a proxied
+// user whose identity names no tenant namespace.
+var errNoTenantNamespace = errors.New("account has no tenant namespace")
 
 type consoleRolePage struct {
 	Label      string
@@ -45,10 +65,15 @@ type consoleAccount struct {
 }
 
 type authConfig struct {
-	RemoteAuthEnabled  bool
-	RemoteUserHeader   string
-	RemoteGroupsHeader string
-	AdminGroups        []string
+	RemoteAuthEnabled     bool
+	RemoteUserHeader      string
+	RemoteGroupsHeader    string
+	RemoteTenantHeader    string
+	RemoteNamespaceHeader string
+	AdminGroups           []string
+	// BasePath is the path the console is served under, such as
+	// /ai-console behind a proxy that strips it; empty serves it at the root.
+	BasePath string
 }
 
 var consoleAccounts = []consoleAccount{
@@ -100,6 +125,9 @@ type sessionRecord struct {
 	Tenant    string
 	Namespace string
 	Expires   time.Time
+	// Remote is set for an identity a trusted proxy sent in headers, whose
+	// namespaced requests need a tenant namespace.
+	Remote bool
 }
 
 type authSessionContextKey struct{}
@@ -139,11 +167,12 @@ func (a *consoleAuth) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	suffix := demoQuerySuffix(r)
+	base := a.basePath(r)
 	if session, ok := a.authenticatedSession(r); ok {
-		http.Redirect(w, r, consoleRolePages[session.Role].RedirectTo+suffix, http.StatusFound)
+		http.Redirect(w, r, base+consoleRolePages[session.Role].RedirectTo+suffix, http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, "/login"+suffix, http.StatusFound)
+	http.Redirect(w, r, base+"/login"+suffix, http.StatusFound)
 }
 
 func (a *consoleAuth) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -152,16 +181,17 @@ func (a *consoleAuth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	suffix := demoQuerySuffix(r)
+	base := a.basePath(r)
 	switch r.Method {
 	case http.MethodGet:
 		if session, ok := a.authenticatedSession(r); ok {
-			http.Redirect(w, r, consoleRolePages[session.Role].RedirectTo+suffix, http.StatusFound)
+			http.Redirect(w, r, base+consoleRolePages[session.Role].RedirectTo+suffix, http.StatusFound)
 			return
 		}
-		a.writeLoginPage(w, consoleRoleUser, "", suffix)
+		a.writeLoginPage(w, r, consoleRoleUser, "", suffix)
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
-			a.writeLoginPage(w, consoleRoleUser, "表单解析失败", suffix)
+			a.writeLoginPage(w, r, consoleRoleUser, "表单解析失败", suffix)
 			return
 		}
 		role := consoleRole(strings.TrimSpace(r.Form.Get("role")))
@@ -173,7 +203,7 @@ func (a *consoleAuth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		account, ok := findConsoleAccount(role, username, password)
 		if !ok {
 			w.WriteHeader(http.StatusUnauthorized)
-			a.writeLoginPage(w, role, "账号或密码错误", suffix)
+			a.writeLoginPage(w, r, role, "账号或密码错误", suffix)
 			return
 		}
 		token, err := a.createSessionForAccount(account)
@@ -184,13 +214,13 @@ func (a *consoleAuth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{
 			Name:     sessionCookieName,
 			Value:    token,
-			Path:     "/",
+			Path:     cookiePath(base),
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 			Expires:  a.now().Add(sessionTTL),
 			MaxAge:   int(sessionTTL / time.Second),
 		})
-		http.Redirect(w, r, consoleRolePages[role].RedirectTo+suffix, http.StatusFound)
+		http.Redirect(w, r, base+consoleRolePages[role].RedirectTo+suffix, http.StatusFound)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -206,19 +236,20 @@ func (a *consoleAuth) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	suffix := demoQuerySuffix(r)
+	base := a.basePath(r)
 	if cookie, err := r.Cookie(sessionCookieName); err == nil && cookie.Value != "" {
 		a.deleteSession(cookie.Value)
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
-		Path:     "/",
+		Path:     cookiePath(base),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 		Expires:  time.Unix(0, 0),
 	})
-	http.Redirect(w, r, "/login"+suffix, http.StatusFound)
+	http.Redirect(w, r, base+"/login"+suffix, http.StatusFound)
 }
 
 func (a *consoleAuth) handleConsolePage(role consoleRole) http.HandlerFunc {
@@ -231,18 +262,19 @@ func (a *consoleAuth) handleConsolePage(role consoleRole) http.HandlerFunc {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
+		base := a.basePath(r)
 		session, ok := a.authenticatedSession(r)
 		if !ok {
-			http.Redirect(w, r, "/login"+demoQuerySuffix(r), http.StatusFound)
+			http.Redirect(w, r, base+"/login"+demoQuerySuffix(r), http.StatusFound)
 			return
 		}
 		if session.Role != role {
-			http.Redirect(w, r, consoleRolePages[session.Role].RedirectTo+demoQuerySuffix(r), http.StatusFound)
+			http.Redirect(w, r, base+consoleRolePages[session.Role].RedirectTo+demoQuerySuffix(r), http.StatusFound)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		_, _ = io.WriteString(w, renderConsoleHTMLForSession(role, session))
+		_, _ = io.WriteString(w, renderConsoleHTMLForSession(role, session, base))
 	}
 }
 
@@ -258,13 +290,44 @@ func (a *consoleAuth) requireSession(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (a *consoleAuth) writeLoginPage(w http.ResponseWriter, role consoleRole, message, querySuffix string) {
+func (a *consoleAuth) writeLoginPage(w http.ResponseWriter, r *http.Request, role consoleRole, message, querySuffix string) {
 	selected := consoleRoleUser
 	if _, ok := consoleRolePages[role]; ok {
 		selected = role
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = io.WriteString(w, renderLoginHTML(selected, message, querySuffix))
+	_, _ = io.WriteString(w, renderLoginHTML(selected, message, querySuffix, a.basePath(r)))
+}
+
+// basePath is the path this request is served under: the configured one,
+// or, from a trusted proxy, the prefix it says it strips.
+func (a *consoleAuth) basePath(r *http.Request) string {
+	if a == nil {
+		return ""
+	}
+	base := sanitizeBasePath(a.config.BasePath)
+	if a.config.RemoteAuthEnabled && r != nil {
+		if forwarded := sanitizeBasePath(r.Header.Get(forwardedPrefixHeader)); forwarded != "" {
+			base = forwarded
+		}
+	}
+	return base
+}
+
+// sanitizeBasePath is a base path made safe to put before URLs, without its
+// trailing slash; one that is not a plain path gives none.
+func sanitizeBasePath(raw string) string {
+	base := strings.TrimSuffix(strings.TrimSpace(raw), "/")
+	if !basePathPattern.MatchString(base) {
+		return ""
+	}
+	return base
+}
+
+// cookiePath scopes the session cookie to the base path the console is
+// served under.
+func cookiePath(base string) string {
+	return base + "/"
 }
 
 func (a *consoleAuth) authenticatedSession(r *http.Request) (sessionRecord, bool) {
@@ -307,10 +370,39 @@ func (a *consoleAuth) requestIdentityFromHeaders(r *http.Request) (sessionRecord
 	if a.roleFromGroups(requestIdentityGroups(r, a.config)) == consoleRoleMonitor {
 		role = consoleRoleMonitor
 	}
-	return sessionRecord{
+	session := sessionRecord{
 		Username: username,
 		Role:     role,
-	}, true
+		Tenant:   strings.TrimSpace(r.Header.Get(headerOrDefault(a.config.RemoteTenantHeader, defaultRemoteTenantHeader))),
+		Remote:   true,
+	}
+	namespace := strings.TrimSpace(r.Header.Get(headerOrDefault(a.config.RemoteNamespaceHeader, defaultRemoteNamespaceHeader)))
+	switch {
+	case namespace != "":
+		// A namespace that is not a DNS-1123 label scopes the identity to
+		// nothing rather than falling back to another mapping.
+		if len(validation.IsDNS1123Label(namespace)) == 0 {
+			session.Namespace = namespace
+		}
+	case role == consoleRoleUser:
+		// The proxy sent no tenant; a static account of the same name may
+		// name one.
+		if account, ok := findConsoleAccountByIdentity(role, username); ok {
+			session.Namespace = account.Namespace
+			if session.Tenant == "" {
+				session.Tenant = account.Tenant
+			}
+		}
+	}
+	return session, true
+}
+
+// headerOrDefault is a configured header name, or the default when none is set.
+func headerOrDefault(header, fallback string) string {
+	if value := strings.TrimSpace(header); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func findConsoleAccount(role consoleRole, username, password string) (consoleAccount, bool) {
@@ -378,6 +470,9 @@ func requestSession(r *http.Request) (sessionRecord, bool) {
 
 func namespaceForListRequest(r *http.Request, requested string) (string, error) {
 	requested = strings.TrimSpace(requested)
+	if unscopedRemoteUser(r) {
+		return "", errNoTenantNamespace
+	}
 	scope := namespaceScopeForRequest(r)
 	if scope == "" {
 		return requested, nil
@@ -393,6 +488,9 @@ func namespaceForListRequest(r *http.Request, requested string) (string, error) 
 
 func authorizeNamespaceRequest(r *http.Request, requested string) error {
 	requested = strings.TrimSpace(requested)
+	if unscopedRemoteUser(r) {
+		return errNoTenantNamespace
+	}
 	scope := namespaceScopeForRequest(r)
 	if scope == "" {
 		return nil
@@ -404,6 +502,14 @@ func authorizeNamespaceRequest(r *http.Request, requested string) error {
 		return fmt.Errorf("namespace %q is outside account scope %q", requested, scope)
 	}
 	return nil
+}
+
+// unscopedRemoteUser reports a user-role identity from a trusted proxy that
+// names no tenant namespace: it may not reach any namespace, rather than all
+// of them as an unscoped account would.
+func unscopedRemoteUser(r *http.Request) bool {
+	session, ok := requestSession(r)
+	return ok && session.Remote && session.Role == consoleRoleUser && strings.TrimSpace(session.Namespace) == ""
 }
 
 func namespaceScopeForRequest(r *http.Request) string {
@@ -430,10 +536,13 @@ func randomToken() (string, error) {
 
 func defaultAuthConfig() authConfig {
 	return authConfig{
-		RemoteAuthEnabled:  parseBoolEnv("KUBEVELA_AI_REMOTE_AUTH_ENABLED", false),
-		RemoteUserHeader:   envOrDefault("KUBEVELA_AI_REMOTE_USER_HEADER", defaultRemoteUserHeader),
-		RemoteGroupsHeader: envOrDefault("KUBEVELA_AI_REMOTE_GROUPS_HEADER", defaultRemoteGroupsHeader),
-		AdminGroups:        parseListEnv("KUBEVELA_AI_ADMIN_GROUPS", []string{"system:masters", "cluster-admin"}),
+		RemoteAuthEnabled:     parseBoolEnv("KUBEVELA_AI_REMOTE_AUTH_ENABLED", false),
+		RemoteUserHeader:      envOrDefault("KUBEVELA_AI_REMOTE_USER_HEADER", defaultRemoteUserHeader),
+		RemoteGroupsHeader:    envOrDefault("KUBEVELA_AI_REMOTE_GROUPS_HEADER", defaultRemoteGroupsHeader),
+		RemoteTenantHeader:    envOrDefault("KUBEVELA_AI_REMOTE_TENANT_HEADER", defaultRemoteTenantHeader),
+		RemoteNamespaceHeader: envOrDefault("KUBEVELA_AI_REMOTE_NAMESPACE_HEADER", defaultRemoteNamespaceHeader),
+		AdminGroups:           parseListEnv("KUBEVELA_AI_ADMIN_GROUPS", []string{"system:masters", "cluster-admin"}),
+		BasePath:              strings.TrimSpace(os.Getenv("KUBEVELA_AI_BASE_PATH")),
 	}
 }
 
@@ -446,6 +555,15 @@ func (c authConfig) withOverrides(override authConfig) authConfig {
 	}
 	if strings.TrimSpace(override.RemoteGroupsHeader) != "" {
 		c.RemoteGroupsHeader = strings.TrimSpace(override.RemoteGroupsHeader)
+	}
+	if strings.TrimSpace(override.RemoteTenantHeader) != "" {
+		c.RemoteTenantHeader = strings.TrimSpace(override.RemoteTenantHeader)
+	}
+	if strings.TrimSpace(override.RemoteNamespaceHeader) != "" {
+		c.RemoteNamespaceHeader = strings.TrimSpace(override.RemoteNamespaceHeader)
+	}
+	if strings.TrimSpace(override.BasePath) != "" {
+		c.BasePath = strings.TrimSpace(override.BasePath)
 	}
 	if len(override.AdminGroups) > 0 {
 		c.AdminGroups = append([]string(nil), override.AdminGroups...)
@@ -544,10 +662,10 @@ func configuredUserHeaders(config authConfig) []string {
 }
 
 func renderConsoleHTML(role consoleRole) string {
-	return renderConsoleHTMLForSession(role, sessionRecord{Role: role})
+	return renderConsoleHTMLForSession(role, sessionRecord{Role: role}, "")
 }
 
-func renderConsoleHTMLForSession(role consoleRole, session sessionRecord) string {
+func renderConsoleHTMLForSession(role consoleRole, session sessionRecord, basePath string) string {
 	page, ok := consoleRolePages[role]
 	if !ok {
 		page = consoleRolePages[consoleRoleUser]
@@ -561,6 +679,7 @@ func renderConsoleHTMLForSession(role consoleRole, session sessionRecord) string
 		"__PAGE_TITLE__", page.Title,
 		"__PAGE_LEDE__", page.Lede,
 		"__PAGE_ROLE_LABEL__", page.RoleLabel,
+		basePathPlaceholder, html.EscapeString(sanitizeBasePath(basePath)),
 	)
 	if role == consoleRoleUser {
 		return replacer.Replace(userConsoleHTML())
@@ -571,12 +690,13 @@ func renderConsoleHTMLForSession(role consoleRole, session sessionRecord) string
 	return replacer.Replace(consoleHTML)
 }
 
-func renderLoginHTML(role consoleRole, message, querySuffix string) string {
+func renderLoginHTML(role consoleRole, message, querySuffix, basePath string) string {
 	errorClass := ""
 	if strings.TrimSpace(message) != "" {
 		errorClass = "show"
 	}
-	action := "/login"
+	base := sanitizeBasePath(basePath)
+	action := base + "/login"
 	if querySuffix != "" {
 		action += querySuffix
 	}
@@ -590,6 +710,7 @@ func renderLoginHTML(role consoleRole, message, querySuffix string) string {
 		"__DEFAULT_ACCOUNT_HINT__", html.EscapeString(defaultAccountHint(monitorRoleLabel)),
 		"__LOGIN_TITLE__", "智算纳管登录",
 		"__LOGIN_ACTION__", html.EscapeString(action),
+		basePathPlaceholder, html.EscapeString(base),
 	)
 	return replacer.Replace(loginHTML)
 }
@@ -784,7 +905,7 @@ const loginHTML = `<!doctype html>
         <div class="actions">
           <div class="hint">登录后会自动跳转到对应页面。</div>
           <button type="submit">登录</button>
-          <button class="ghost" type="submit" formaction="/login?demo=local">本地演示</button>
+          <button class="ghost" type="submit" formaction="__BASE_PATH__/login?demo=local">本地演示</button>
         </div>
       </form>
     </section>

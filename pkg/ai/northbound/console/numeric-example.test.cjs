@@ -16,6 +16,7 @@ function app({demo=false,section='models',respond=async()=>({namespace:'team',mo
     document:{body:{dataset:{accountNamespace:'team',accountTenant:'tenant',accountUsername:'user'}},getElementById:getNode,querySelector:selector=>getNode(selector.replace(/^#/,'').replace(/.*\[data-action="?([^\]"]+).*/, '$1-button')),addEventListener(type,fn){listeners[type]=fn;}},location,window:{addEventListener(){}},
     URLSearchParams,FormData:class extends FormData{constructor(input){super();if(input)for(const [k,v]of input)this.set(k,v);}},setTimeout:()=>0,clearTimeout});
   const source=fs.readFileSync(__dirname+'/app.js','utf8');
+  vm.runInContext(fs.readFileSync(__dirname+'/ui.js','utf8'),context);
   vm.runInContext(fs.readFileSync(__dirname+'/create.js','utf8'),context);
   vm.runInContext(source.replace('  loadRoute();icons();','  globalThis.testApp={assetTable,assetDetail,registerAsset,renderCollection,expired,showModal,loadAssetOptions,renderResult,renderDetail,setDetail:(value,output)=>{detail=value;result=output;route={section:value.kind===\'AIJob\'?\'jobs\':\'services\',detail:true,namespace:value.namespace,name:value.name,tab:\'result\'};routeVersion++;},startWizard:(kind,values={})=>{route.create=true;draft=Object.assign(ConsoleCreate.defaults(kind,identity.namespace,identity.tenant),values);step=1;},getDraft:()=>draft,setItems:value=>{items=value;}};'),context);
   const modal=getNode('modal');

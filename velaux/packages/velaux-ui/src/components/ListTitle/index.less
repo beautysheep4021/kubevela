@@ -1,0 +1,32 @@
+// A page's header, as the cloud consoles set it: the title, a line saying
+// what the page is for, and the page's actions at the right.
+.title-wrapper {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  width: 100%;
+  padding: 4px 0 16px;
+  .title-text {
+    min-width: 0;
+  }
+  .title {
+    margin: 0;
+    color: var(--c-text);
+    font-weight: 600;
+    font-size: 20px !important;
+    line-height: 28px;
+  }
+  .subTitle {
+    margin: 4px 0 0;
+    color: var(--c-text-3);
+    font-size: 13px;
+    line-height: 20px;
+  }
+  .float-right {
+    display: flex;
+    flex: none;
+    gap: 8px;
+    align-items: center;
+  }
+}

@@ -1,0 +1,75 @@
+// The navigation column reads pale and quiet; its palette is overridden
+// inline from the customisation's sidebar and accent colours.
+.console-sidebar {
+  --sb-text: #4e5969;
+  --sb-text-strong: #1f2329;
+  --sb-muted: #86909c;
+  --sb-hover: #f2f3f5;
+  --sb-active: #edf2fe;
+  --sb-active-text: var(--c-primary);
+  --sb-accent: var(--c-primary);
+  --sb-border: #e5e6eb;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 216px;
+  font-family: var(--font);
+  background: var(--sb-bg, #fff);
+  border-right: 1px solid var(--sb-border);
+  transition: width 0.2s ease;
+  &.collapsed {
+    width: 52px;
+  }
+}
+
+.sidebar-filter {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  height: 30px;
+  margin: 12px 12px 6px;
+  padding: 0 8px;
+  color: var(--sb-muted);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--radius);
+  input {
+    flex: 1;
+    min-width: 0;
+    color: var(--sb-text-strong);
+    font-size: 12px;
+    background: transparent;
+    border: none;
+    outline: none;
+  }
+  &:focus-within {
+    border-color: var(--sb-accent);
+  }
+}
+
+.sidebar-menu {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.12);
+    border-radius: 2px;
+  }
+}
+
+.sidebar-collapse {
+  display: flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 18px;
+  color: var(--sb-muted);
+  border-top: 1px solid var(--sb-border);
+  cursor: pointer;
+  &:hover {
+    color: var(--sb-text-strong);
+    background: var(--sb-hover);
+  }
+}

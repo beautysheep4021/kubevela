@@ -27,7 +27,7 @@ func serveConsoleAsset(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/console/")
 	contentType, ok := map[string]string{
 		"app.js": "text/javascript", "api.js": "text/javascript", "create.js": "text/javascript",
-		"state.js": "text/javascript", "lucide.js": "text/javascript",
+		"state.js": "text/javascript", "lucide.js": "text/javascript", "ui.js": "text/javascript",
 		"styles.css": "text/css", "brand.svg": "image/svg+xml",
 		"monitor.js": "text/javascript", "monitor-state.js": "text/javascript",
 		"monitor-api.js": "text/javascript", "monitor.css": "text/css",
@@ -47,7 +47,9 @@ func serveConsoleAsset(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(content)
 }
 
-func currentConsoleSession(w http.ResponseWriter, r *http.Request) {
+// currentConsoleSession says who the console is signed in as, and the base
+// path it is served under, for the page to build its URLs from.
+func (a *consoleAuth) currentConsoleSession(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -57,5 +59,6 @@ func currentConsoleSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"username": session.Username, "role": string(session.Role),
 		"tenant": session.Tenant, "namespace": session.Namespace,
+		"basePath": a.basePath(r),
 	})
 }

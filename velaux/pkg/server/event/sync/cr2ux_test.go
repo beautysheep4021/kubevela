@@ -1,0 +1,358 @@
+/*
+ Copyright 2022 The KubeVela Authors.
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+ 	http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+*/
+
+package sync
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"sync"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+
+	wfTypesv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/apis/types"
+	"github.com/oam-dev/kubevela/pkg/features"
+	"github.com/oam-dev/kubevela/pkg/oam"
+	"github.com/oam-dev/kubevela/pkg/oam/util"
+	common2 "github.com/oam-dev/kubevela/pkg/utils/common"
+
+	"github.com/kubevela/velaux/pkg/server/domain/model"
+	"github.com/kubevela/velaux/pkg/server/domain/service"
+	"github.com/kubevela/velaux/pkg/server/infrastructure/datastore"
+	v1 "github.com/kubevela/velaux/pkg/server/interfaces/api/dto/v1"
+)
+
+var _ = Describe("Test CR convert to ux", func() {
+	var (
+		ds          datastore.DataStore
+		cr2ux       *CR2UX
+		userService service.UserService
+		dbNamespace string
+		err         error
+	)
+
+	BeforeEach(func() {
+		By("Preparing database")
+		dbNamespace = "test-sync-ns-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+		ds, err = NewDatastore(datastore.Config{Type: "kubeapi", Database: dbNamespace})
+		Expect(ds).ToNot(BeNil())
+		Expect(err).Should(BeNil())
+
+		By("Preparing cr2ux")
+		cr2ux = newCR2UX(ds)
+		Expect(cr2ux).ShouldNot(BeNil())
+		userService = cr2ux.userService
+
+		ok, err := service.InitTestAdmin(userService)
+		Expect(err).Should(BeNil())
+		Expect(ok).Should(BeTrue())
+	})
+
+	It("Test get app with occupied app", func() {
+		apName1 := "example"
+		appNS1 := "get-app-test-ns1"
+		appNS2 := "get-app-test-ns2"
+		var ns = corev1.Namespace{}
+		ns.Name = dbNamespace
+		err = k8sClient.Create(context.TODO(), &ns)
+		Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+		ns.Name = appNS1
+		ns.ResourceVersion = ""
+		err = k8sClient.Create(context.TODO(), &ns)
+		Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+
+		By("no app created, test the name")
+
+		gotApp, gotAppName, err := cr2ux.getApp(context.Background(), apName1, appNS1)
+		Expect(gotAppName).Should(BeEquivalentTo(apName1))
+		Expect(gotApp).Should(BeNil())
+		Expect(err).ShouldNot(BeNil())
+
+		By("create test app2 and check the syncing results")
+		app2 := &v1beta1.Application{}
+		Expect(common2.ReadYamlToObject("testdata/test-app2.yaml", app2)).Should(BeNil())
+		app2.Namespace = appNS2
+		Expect(cr2ux.AddOrUpdate(context.Background(), app2)).Should(BeNil())
+		comp1 := model.ApplicationComponent{AppPrimaryKey: apName1, Name: "blog"}
+		Expect(ds.Get(context.Background(), &comp1)).Should(BeNil())
+		Expect(comp1.Properties).Should(BeEquivalentTo(&model.JSONStruct{"image": "wordpress"}))
+
+		By("app not created, but the name is occupied by the same name app from other namespace")
+		gotApp, gotAppName, err = cr2ux.getApp(context.Background(), apName1, appNS1)
+		Expect(gotAppName).Should(BeEquivalentTo(formatAppComposedName(apName1, appNS1)))
+		Expect(gotApp).Should(BeNil())
+		Expect(err).ShouldNot(BeNil())
+
+		By("app get the created app")
+		gotApp, gotAppName, err = cr2ux.getApp(context.Background(), apName1, appNS2)
+		Expect(gotAppName).Should(BeEquivalentTo(apName1))
+		Expect(gotApp.Labels[types.LabelSourceOfTruth]).Should(BeEquivalentTo(types.FromCR))
+		Expect(err).Should(BeNil())
+		Expect(gotApp.IsSynced()).Should(BeEquivalentTo(true))
+	})
+
+	It("Test an application reading expressions syncs with one in its deploy step", func() {
+		ns := corev1.Namespace{}
+		ns.Name = "expr-sync-test"
+		Expect(k8sClient.Create(context.TODO(), &ns)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+		app := func(name string, annotations map[string]string) *v1beta1.Application {
+			return &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name, Annotations: annotations},
+				Spec: v1beta1.ApplicationSpec{
+					Components: []common.ApplicationComponent{{Name: "web", Type: "webservice", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx"}`)}}},
+					Workflow: &v1beta1.Workflow{Steps: []wfTypesv1alpha1.WorkflowStep{{WorkflowStepBase: wfTypesv1alpha1.WorkflowStepBase{
+						Name: "deploy", Type: "deploy", Properties: &runtime.RawExtension{Raw: []byte(`{"policies":[],"parallelism":"$(context.appName)"}`)},
+					}}}},
+				},
+			}
+		}
+
+		// VelaUX holds the gates as the controller publishes them.
+		was := utilfeature.DefaultMutableFeatureGate.Enabled(features.EnableCelExpressions)
+		Expect(utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=true", features.EnableCelExpressions))).Should(Succeed())
+		defer func() {
+			Expect(utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=%t", features.EnableCelExpressions, was))).Should(Succeed())
+		}()
+
+		By("opted in, the expression is left for the workflow to resolve")
+		_, err := cr2ux.ConvertApp2DatastoreApp(context.Background(), app("expr-on", map[string]string{oam.AnnotationCelExpressions: "true"}))
+		Expect(err).Should(BeNil())
+
+		By("not opted in, the step is invalid, as KubeVela finds it")
+		_, err = cr2ux.ConvertApp2DatastoreApp(context.Background(), app("expr-off", nil))
+		Expect(err).ShouldNot(BeNil())
+		Expect(err.Error()).Should(ContainSubstring("invalid WorkflowStep deploy"))
+	})
+
+	It("Test an addon's application is labelled with its addon", func() {
+		for _, name := range []string{dbNamespace, types.DefaultKubeVelaNS, "addon-label-test"} {
+			ns := corev1.Namespace{}
+			ns.Name = name
+			Expect(k8sClient.Create(context.TODO(), &ns)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+		}
+
+		addonApp := &v1beta1.Application{}
+		Expect(common2.ReadYamlToObject("testdata/test-app2.yaml", addonApp)).Should(BeNil())
+		addonApp.Name = "addon-fluxcd"
+		addonApp.Namespace = types.DefaultKubeVelaNS
+		addonApp.Labels = map[string]string{oam.LabelAddonName: "fluxcd"}
+		Expect(cr2ux.AddOrUpdate(context.Background(), addonApp)).Should(BeNil())
+		got, _, err := cr2ux.getApp(context.Background(), addonApp.Name, addonApp.Namespace)
+		Expect(err).Should(BeNil())
+		Expect(got.Labels[model.LabelSyncAddon]).Should(Equal("fluxcd"))
+
+		plain := &v1beta1.Application{}
+		Expect(common2.ReadYamlToObject("testdata/test-app2.yaml", plain)).Should(BeNil())
+		plain.Name = "not-an-addon"
+		plain.Namespace = "addon-label-test"
+		Expect(cr2ux.AddOrUpdate(context.Background(), plain)).Should(BeNil())
+		got, _, err = cr2ux.getApp(context.Background(), plain.Name, plain.Namespace)
+		Expect(err).Should(BeNil())
+		Expect(got.Labels).ShouldNot(HaveKey(model.LabelSyncAddon))
+	})
+
+	It("Test app updated and delete app", func() {
+		ctx := context.Background()
+		apName1 := "example"
+		appNS1 := "update-app-test-ns1"
+
+		var ns = corev1.Namespace{}
+		ns.Name = dbNamespace
+		err = k8sClient.Create(context.TODO(), &ns)
+		Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+		ns.Name = appNS1
+		ns.ResourceVersion = ""
+		err = k8sClient.Create(context.TODO(), &ns)
+		Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+
+		By("create test app1 and check the syncing results")
+		app1 := &v1beta1.Application{}
+		Expect(common2.ReadYamlToObject("testdata/test-app1.yaml", app1)).Should(BeNil())
+		app1.Namespace = appNS1
+		envName := model.AutoGenEnvNamePrefix + app1.Namespace
+		app1.Spec.Sources = []v1beta1.ApplicationSource{{Name: "db", Type: "db-lookup", Properties: &runtime.RawExtension{Raw: []byte(`{"secret":"db-creds"}`)}}}
+		app1.Annotations = map[string]string{oam.AnnotationCelExpressions: "true", "kubectl.kubernetes.io/last-applied-configuration": "{}"}
+
+		Expect(cr2ux.AddOrUpdate(context.Background(), app1)).Should(BeNil())
+		synced := model.Application{Name: apName1}
+		Expect(ds.Get(ctx, &synced)).Should(BeNil())
+		Expect(synced.Annotations).Should(Equal(map[string]string{oam.AnnotationCelExpressions: "true"}), "the expressions opt-in is synced, other annotations are not")
+		Expect(synced.Sources).Should(HaveLen(1))
+		Expect(string(synced.Sources[0].Properties.Raw)).Should(MatchJSON(`{"secret":"db-creds"}`))
+		comp1 := model.ApplicationComponent{AppPrimaryKey: apName1, Name: "nginx"}
+		Expect(ds.Get(context.Background(), &comp1)).Should(BeNil())
+		Expect(comp1.Properties).Should(BeEquivalentTo(&model.JSONStruct{"image": "nginx"}))
+
+		comp2 := model.ApplicationComponent{AppPrimaryKey: app1.Name, Name: "nginx2"}
+		Expect(ds.Get(ctx, &comp2)).Should(BeNil())
+		Expect(comp2.Properties).Should(BeEquivalentTo(&model.JSONStruct{"image": "nginx2"}))
+
+		appPlc1 := model.ApplicationPolicy{AppPrimaryKey: app1.Name, Name: "topology-beijing-demo"}
+		Expect(ds.Get(ctx, &appPlc1)).Should(BeNil())
+		appPlc2 := model.ApplicationPolicy{AppPrimaryKey: app1.Name, Name: "topology-local"}
+		Expect(ds.Get(ctx, &appPlc2)).Should(BeNil())
+
+		appwf1 := model.Workflow{AppPrimaryKey: app1.Name, Name: "workflow-" + envName}
+		Expect(ds.Get(ctx, &appwf1)).Should(BeNil())
+		Expect(len(appwf1.Steps)).Should(BeEquivalentTo(1))
+
+		app2 := &v1beta1.Application{}
+		Expect(common2.ReadYamlToObject("testdata/test-app2.yaml", app2)).Should(BeNil())
+		app1.Namespace = appNS1
+		app1.Status.LatestRevision = &common.Revision{Name: "v2"}
+		app1.Spec = app2.Spec
+		app1.Annotations = nil
+		Expect(cr2ux.AddOrUpdate(context.Background(), app1)).Should(BeNil())
+		comp3 := model.ApplicationComponent{AppPrimaryKey: apName1, Name: "blog"}
+		Expect(ds.Get(context.Background(), &comp3)).Should(BeNil())
+		Expect(comp3.Properties).Should(BeEquivalentTo(&model.JSONStruct{"image": "wordpress"}))
+
+		Expect(ds.Get(ctx, &comp1)).Should(BeEquivalentTo(datastore.ErrRecordNotExist))
+		Expect(ds.Get(ctx, &comp2)).Should(BeEquivalentTo(datastore.ErrRecordNotExist))
+		Expect(ds.Get(ctx, &appPlc1)).Should(BeEquivalentTo(datastore.ErrRecordNotExist), fmt.Sprintf("plc name %s, creator %s", appPlc1.Name, appPlc1.Creator))
+		Expect(ds.Get(ctx, &appPlc2)).Should(BeEquivalentTo(datastore.ErrRecordNotExist), fmt.Sprintf("plc name %s, creator %s", appPlc2.Name, appPlc2.Creator))
+		resynced := model.Application{Name: apName1}
+		Expect(ds.Get(ctx, &resynced)).Should(BeNil())
+		Expect(resynced.Sources).Should(BeEmpty(), "a source removed from the CR is removed from VelaUX")
+		Expect(resynced.Annotations).ShouldNot(HaveKey(oam.AnnotationCelExpressions), "an opt-in removed from the CR is removed from VelaUX")
+		appwf2 := &model.Workflow{AppPrimaryKey: apName1, Name: appwf1.Name}
+		Expect(ds.Get(ctx, appwf2)).Should(BeNil())
+		Expect(len(appwf2.Steps)).Should(BeEquivalentTo(0))
+	})
+
+	It("Test exist env", func() {
+		projectName := "project-e"
+
+		_, err = cr2ux.projectService.CreateProject(context.TODO(), v1.CreateProjectRequest{
+			Name:  projectName,
+			Owner: service.FakeAdminName,
+		})
+		Expect(err).Should(BeNil())
+
+		_, err = cr2ux.targetService.CreateTarget(context.TODO(), v1.CreateTargetRequest{
+			Name:    "target-test",
+			Project: projectName,
+			Cluster: &v1.ClusterTarget{
+				ClusterName: "local",
+				Namespace:   "target-test",
+			},
+		})
+		Expect(err).Should(BeNil())
+		_, err = cr2ux.envService.CreateEnv(context.TODO(), v1.CreateEnvRequest{
+			Name:      "env-test",
+			Project:   projectName,
+			Namespace: "env-test",
+			Targets:   []string{"target-test"},
+		})
+		Expect(err).Should(BeNil())
+
+		app4 := &v1beta1.Application{}
+		Expect(common2.ReadYamlToObject("testdata/test-app4.yaml", app4)).Should(BeNil())
+		app4.Namespace = "target-test"
+		Expect(cr2ux.AddOrUpdate(context.Background(), app4)).Should(BeNil())
+
+		count, err := cr2ux.envService.ListEnvCount(context.TODO(), v1.ListEnvOptions{Project: projectName})
+		Expect(err).Should(BeNil())
+		Expect(count).Should(Equal(int64(2)))
+
+		resultApp := &model.Application{Name: app4.Name, Project: "project-e"}
+		err = ds.Get(context.TODO(), resultApp)
+		Expect(err).Should(BeNil())
+		Expect(resultApp.Labels[model.LabelSyncNamespace]).Should(Equal("target-test"))
+
+		app5 := &v1beta1.Application{}
+		Expect(common2.ReadYamlToObject("testdata/test-app4.yaml", app5)).Should(BeNil())
+		app5.Namespace = "env-test"
+		Expect(cr2ux.AddOrUpdate(context.Background(), app5)).Should(BeNil())
+
+		resultApp = &model.Application{Name: formatAppComposedName(app5.Name, app5.Namespace), Project: "project-e"}
+		err = ds.Get(context.TODO(), resultApp)
+		Expect(err).Should(BeNil())
+		Expect(resultApp.Labels[model.LabelSyncNamespace]).Should(Equal("env-test"))
+
+		// should not create new env
+		count, err = cr2ux.envService.ListEnvCount(context.TODO(), v1.ListEnvOptions{Project: projectName})
+		Expect(err).Should(BeNil())
+		Expect(count).Should(Equal(int64(2)))
+	})
+
+	It("Test to sync the project which existed env belongs", func() {
+		projectName := "project-test"
+
+		_, err = cr2ux.projectService.CreateProject(context.TODO(), v1.CreateProjectRequest{
+			Name:  projectName,
+			Owner: service.FakeAdminName,
+		})
+		Expect(err).Should(BeNil())
+
+		_, err = cr2ux.targetService.CreateTarget(context.TODO(), v1.CreateTargetRequest{
+			Name:    "target-test1",
+			Project: projectName,
+			Cluster: &v1.ClusterTarget{
+				ClusterName: "local",
+				Namespace:   "target-test1",
+			},
+		})
+		Expect(err).Should(BeNil())
+		_, err = cr2ux.envService.CreateEnv(context.TODO(), v1.CreateEnvRequest{
+			Name:      "env-test1",
+			Project:   projectName,
+			Namespace: "env-test1",
+			Targets:   []string{"target-test1"},
+		})
+		Expect(err).Should(BeNil())
+
+		app5 := &v1beta1.Application{}
+		Expect(common2.ReadYamlToObject("testdata/test-app5.yaml", app5)).Should(BeNil())
+		app5.Namespace = "env-test1"
+		Expect(cr2ux.AddOrUpdate(context.Background(), app5)).Should(BeNil())
+
+		app, err := cr2ux.applicationService.GetApplication(context.TODO(), app5.Name)
+		Expect(err).Should(BeNil())
+		Expect(app.Project).Should(Equal("project-test"))
+	})
+})
+
+func newCR2UX(ds datastore.DataStore) *CR2UX {
+	projectService := service.NewTestProjectService(ds, k8sClient)
+	applicationService := service.NewTestApplicationService(ds, k8sClient, cfg)
+	targetService := service.NewTestTargetService(ds, k8sClient)
+	envService := service.NewTestEnvService(ds, k8sClient)
+	userService := service.NewTestUserService(ds, k8sClient)
+	workflowService := service.NewTestWorkflowService(ds, k8sClient)
+	return &CR2UX{
+		ds:                 ds,
+		cli:                k8sClient,
+		cache:              sync.Map{},
+		projectService:     projectService,
+		userService:        userService,
+		targetService:      targetService,
+		envService:         envService,
+		applicationService: applicationService,
+		workflowService:    workflowService,
+	}
+}

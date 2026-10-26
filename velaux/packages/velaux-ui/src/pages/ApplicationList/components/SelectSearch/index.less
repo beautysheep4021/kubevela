@@ -1,0 +1,33 @@
+// The list's filters on one row, at the top of the list's panel: search
+// first, then the selects, then the actions, refresh and the view at the right.
+.app-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 16px 20px 12px;
+}
+
+.app-filter-bar-search {
+  flex: 0 1 280px;
+  .app-filter-bar-search-icon {
+    margin: 0 4px 0 8px;
+    color: var(--c-text-3);
+    cursor: pointer;
+  }
+}
+
+.app-filter-bar-select {
+  flex: 0 1 200px;
+  min-width: 0;
+  &.labels {
+    flex: 0 1 260px;
+  }
+}
+
+.app-filter-bar-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+}

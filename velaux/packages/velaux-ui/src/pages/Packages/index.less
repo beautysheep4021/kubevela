@@ -1,0 +1,126 @@
+.packages-toolbar {
+  padding: 16px 20px 0;
+  .segmented-picker {
+    width: auto;
+  }
+  .segmented-option {
+    flex: none;
+  }
+}
+
+// A package's name, with where it comes from beneath.
+.package-name {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  > span {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+}
+
+.package-name-icon {
+  flex: none;
+  color: var(--c-text-3);
+}
+
+.package-name-title {
+  font-weight: 500;
+}
+
+.package-name-sub {
+  color: var(--c-text-3);
+  font-size: 12px;
+}
+
+// A segmented control: a package's views, and the shared workflows' filters.
+.packages-source,
+.package-tabs {
+  display: inline-flex;
+  padding: 3px;
+  background: #e8edf3;
+  border-radius: 6px;
+  button {
+    padding: 3px 12px;
+    color: #475569;
+    font-size: 13px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    &.active {
+      color: #0f172a;
+      font-weight: 500;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+  }
+}
+
+// What runs a package's functions, as a pill: an external provider, CueX or KubeVela.
+.provider-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  font-weight: 500;
+  font-size: 12px;
+  border-radius: 11px;
+  &.external {
+    color: #1d4ed8;
+    background: #dbeafe;
+  }
+  &.cuex {
+    color: #6d28d9;
+    background: #ede9fe;
+  }
+  &.builtin {
+    color: #0f766e;
+    background: #ccfbf1;
+  }
+}
+
+.package-protocol {
+  padding: 1px 6px;
+  color: #334155;
+  font-size: 11px;
+  text-transform: uppercase;
+  background: #f1f5f9;
+  border-radius: 4px;
+}
+
+.package-type {
+  color: #7c3aed;
+  font-size: 12px;
+  font-family: Menlo, Monaco, monospace;
+  white-space: pre-wrap;
+}
+
+.package-fields {
+  width: 100%;
+  font-size: 13px;
+  border-collapse: collapse;
+  th {
+    padding: 4px 12px 4px 0;
+    color: #64748b;
+    font-weight: 500;
+    font-size: 12px;
+    text-align: left;
+  }
+  td {
+    padding: 6px 12px 6px 0;
+    vertical-align: top;
+    border-top: 1px solid #e2e8f0;
+  }
+  code {
+    font-size: 12px;
+    font-family: Menlo, Monaco, monospace;
+  }
+}
+
+// A type written as a whole, above the fields it stands for.
+.package-type-whole {
+  display: block;
+  margin-bottom: 6px;
+}

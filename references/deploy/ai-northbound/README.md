@@ -209,6 +209,29 @@ Pod 替换后，临时 port-forward 可能需要重启，页面可能需要重�
 - 新增只读 `GET /api/v1/ai/tenant-resources`，仅监测方可访问。升级已有部署时，除了更新镜像，还需应用新版 RBAC，为 ServiceAccount 增加 namespaces/resourcequotas 的 get/list 权限。
 - 本地演示数据仍为各页面内存中的样例，不在使用方与监测方浏览器之间实时同步。真实模式两端读取同一集群资源。
 
+### 经可信代理接入（VelaUX 整合）
+
+VelaUX 可以把控制台反向代理在 `/ai-console/` 下，由代理去掉该前缀，并以请求头传递已登录用户的身份。只有开启 `KUBEVELA_AI_REMOTE_AUTH_ENABLED=true` 时，后端才信任这些请求头。开启后，必须确保只有代理能访问本服务（例如 NetworkPolicy，或只监听集群内地址），否则任何人都能伪造身份。
+
+| 环境变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `KUBEVELA_AI_REMOTE_AUTH_ENABLED` | `false` | 信任代理传入的身份请求头 |
+| `KUBEVELA_AI_REMOTE_USER_HEADER` | `X-Remote-User` | 用户名 |
+| `KUBEVELA_AI_REMOTE_GROUPS_HEADER` | `X-Remote-Groups` | 用户组，逗号分隔；命中 `KUBEVELA_AI_ADMIN_GROUPS` 即为监测方 |
+| `KUBEVELA_AI_REMOTE_TENANT_HEADER` | `X-Remote-Tenant` | 租户名，仅用于展示 |
+| `KUBEVELA_AI_REMOTE_NAMESPACE_HEADER` | `X-Remote-Namespace` | 租户 Namespace，必须是 DNS-1123 label；使用方的所有请求都限定在该 Namespace 内 |
+| `KUBEVELA_AI_ADMIN_GROUPS` | `system:masters,cluster-admin` | 视为监测方的用户组 |
+| `KUBEVELA_AI_BASE_PATH` | 空 | 控制台对外的路径前缀，例如 `/ai-console` |
+
+基础路径：页面里的资源、登录、退出和角色跳转地址，以及服务端的重定向，都会加上基础路径；路由本身不带前缀。基础路径取自 `KUBEVELA_AI_BASE_PATH`；开启代理认证后，代理传入的 `X-Forwarded-Prefix` 优先。前缀必须以 `/` 开头，只能包含字母、数字、`-`、`_` 和 `/`，不合规的值会被忽略。会话 Cookie 的作用路径同样限定在基础路径下。
+
+租户范围：
+- 使用方带合法的 Namespace 请求头时，只能访问该 Namespace。
+- 没带 Namespace 请求头时，会按同名的内置测试账号补齐租户和 Namespace。
+- 两者都没有，或者 Namespace 不合规时，所有带 Namespace 的接口一律返回 403 `account has no tenant namespace`，不会退化为可访问全部 Namespace。
+- 监测方不受 Namespace 限制。
+- `GET /api/v1/ai/session` 返回 `username`、`role`、`tenant`、`namespace` 和 `basePath`，供页面展示和拼接地址。
+
 当前平台使用共享 ServiceAccount 访问 K8s，由后端按登录会话校验租户范围，并非每个网站账号都对应独立 Kubernetes 用户。
 ClusterRole 面向 MVP，允许 Application 管理、工作负载与日志读取、Deployment 更新、ConfigMap 读写。
 生产化需收紧授权、替换默认认证并完善网络与资源隔离，不能只依赖前端隐藏内容。

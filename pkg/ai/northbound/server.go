@@ -148,7 +148,7 @@ func NewServerWithOptions(options Options) http.Handler {
 	mux.HandleFunc("/monitor", auth.handleConsolePage(consoleRoleMonitor))
 	mux.HandleFunc("/healthz", healthz)
 	mux.HandleFunc("/console/", auth.requireSession(serveConsoleAsset))
-	mux.HandleFunc("/api/v1/ai/session", auth.requireSession(currentConsoleSession))
+	mux.HandleFunc("/api/v1/ai/session", auth.requireSession(auth.currentConsoleSession))
 	mux.HandleFunc("/api/v1/ai/examples/numeric", auth.requireSession(numericExample(options.NumericExample)))
 	mux.HandleFunc("/api/v1/ai/validate", auth.requireSession(validate))
 	mux.HandleFunc("/api/v1/ai/normalize", auth.requireSession(normalize))

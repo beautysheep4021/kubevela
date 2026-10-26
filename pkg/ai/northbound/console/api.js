@@ -37,6 +37,9 @@
     var timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 && options.timeoutMs <= 2147483647
       ? options.timeoutMs : 20000;
     var demo = options.demo === true;
+    // basePath is where the console is served behind a proxy; API paths stay
+    // /api/v1/ai/... and only the request goes under it.
+    var basePath = typeof options.basePath === 'string' ? options.basePath.replace(/\/+$/, '') : '';
     var identity;
     var invalid;
     var state;
@@ -55,7 +58,7 @@
       abort(init.signal);
       var response;
       try {
-        response = await root.fetch(path, Object.assign({}, init, {credentials: 'same-origin', redirect: 'manual'}));
+        response = await root.fetch(basePath + path, Object.assign({}, init, {credentials: 'same-origin', redirect: 'manual'}));
       } catch (error) {
         if (error.name === 'AbortError') {
           var cancelled = failure(0, 'Request aborted');

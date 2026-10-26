@@ -1,0 +1,46 @@
+// Settings as console panels: the version as facts, then the forms, saved
+// together by the button beneath them.
+.platform-setting {
+  .setting-facts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 24px;
+    margin: 0;
+    dt {
+      color: var(--c-text-3);
+      font-size: 12px;
+    }
+    dd {
+      margin: 4px 0 0;
+      color: var(--c-text);
+      font-size: 14px;
+      word-break: break-all;
+    }
+  }
+  .setting-dex-link {
+    margin-top: 8px;
+    font-size: 13px;
+  }
+  .setting-default-projects {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .setting-default-project {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) auto;
+    gap: 8px;
+    align-items: center;
+    .next-form-item {
+      margin-bottom: 0;
+    }
+  }
+  .setting-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 16px;
+    .next-btn {
+      min-width: 88px;
+    }
+  }
+}
